@@ -136,41 +136,44 @@
            )
          _int))
 
+(define ZMQ_POLLIN  1)
+(define ZMQ_POLLOUT 2)
+
 ;; FIXME
-(define integer-socket-options '(linger))
+(define integer-socket-options '(linger fd events))
 (define bytes-socket-options '(identity))
 
+(define RETRY-COUNT 5)
+
 (define-zmq zmq_getsockopt/int
-  (_fun* _zmq_socket-pointer
+  (_fun* #:retry (retry [count 0])
+         _zmq_socket-pointer
          _zmq_socket_option
          (value : (_ptr o _int))
          (len : (_ptr io _size) = (compiler-sizeof 'int))
          -> (status : _int)
-         -> (and (zero? status) value))
+         -> (cond [(zero? status) value]
+                  [(and (= (saved-errno) EINTR) (< count RETRY-COUNT))
+                   (retry (add1 count))]
+                  [else #f]))
   #:c-id zmq_getsockopt)
 
 (define-zmq zmq_getsockopt/bytes
-  (_fun* (sock opt buf) ::
+  (_fun* #:retry (retry [buflen 256] [first-try? #t])
+         (sock opt) ::
          (sock : _zmq_socket-pointer)
          (opt : _zmq_socket_option)
-         (buf : _bytes)
-         (len : (_ptr io _size) = (bytes-length buf))
+         (buf : _bytes = (make-bytes buflen))
+         (len : (_ptr io _size) = buflen)
          -> (status : _int)
-         -> (cons status len))
+         -> (cond [(zero? status)
+                   (if (= len buflen) buf (subbytes buf len))]
+                  [(and (= (saved-errno) EINVAL) first-try?)
+                   (retry len #f)]
+                  [(= (saved-errno) EINTR)
+                   (retry buflen first-try?)]
+                  [else #f]))
   #:c-id zmq_getsockopt)
-
-;; zmq_getsockopt/bytes* : _zmq_socket-pointer _zmq_socket_option -> Bytes/#f
-(define (zmq_getsockopt/bytes* sock opt)
-  (let loop ([len 256] [first-try? #t])
-    (define buf (make-bytes len 0))
-    (define s+len (zmq_getsockopt/bytes sock opt buf))
-    (cond [(zero? (cdr s+len))
-           (if (= len (cdr s+len)) buf (subbytes buf (cdr s+len)))]
-          [(and (= (saved-errno) EINVAL) first-try?)
-           (loop (cdr s+len) #f)]
-          [(= (saved-errno) EINTR)
-           (loop len first-try?)]
-          [else #f])))
 
 (define-zmq zmq_setsockopt/int
   (_fun* _zmq_socket-pointer

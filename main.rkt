@@ -36,6 +36,8 @@
     (unless ptr (error who "socket is closed"))
     ptr))
 
+(define (zmq-socket? v) (socket? v))
+
 ;; zmq-socket : -> Socket
 (define (zmq-socket type)
   (start-atomic)
@@ -49,25 +51,25 @@
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (*close 'zmq-socket-finalizer sock)))
   (end-atomic)
-  ;; (zmq-set-socket-option sock 'linger 1000)
+  ;; (zmq-set-option sock 'linger 1000)
   sock)
 
-(define (zmq-get-socket-option sock option
-                               #:who [who 'zmq-get-socket-option])
+(define (zmq-get-option sock option
+                        #:who [who 'zmq-get-option])
   (call-with-semaphore (socket-sema sock)
     (lambda ()
       (define ptr (socket-ptr* who sock))
       (let ([v (cond [(memq option integer-socket-options)
                       (zmq_getsockopt/int ptr option)]
                      [(memq option bytes-socket-options)
-                      (zmq_getsockopt/bytes* ptr option)])])
+                      (zmq_getsockopt/bytes ptr option)])])
         (unless v
-          (error 'zmq-get-socket-option "error getting socket option\n  option: ~e~a"
+          (error who "error getting socket option\n  option: ~e~a"
                  option (errno-lines)))
         v))))
 
-(define (zmq-set-socket-option sock option value
-                               #:who [who 'zmq-set-socket-option])
+(define (zmq-set-option sock option value
+                        #:who [who 'zmq-set-option])
   (call-with-semaphore (socket-sema sock)
     (lambda ()
       (define ptr (socket-ptr* who sock))
@@ -93,7 +95,7 @@
 (define (zmq-bind sock . addrs)
   (call-with-semaphore (socket-sema sock)
     (lambda ()
-      (define ptr (socket-ptr* 'zmq-connect sock))
+      (define ptr (socket-ptr* 'zmq-bind sock))
       (for ([addr (in-list addrs)])
         (let ([s (zmq_bind ptr addr)])
           (unless (zero? s)
@@ -131,20 +133,28 @@
       (define (sendframe frame n options)
         (let ([s (zmq_send ptr (car frames) options)])
           (cond [(>= s 0) (void)]
-                [(= (saved-errno) EAGAIN)
-                 (eprintf "got EAGAIN, retrying\n")
-                 (sleep 0.001)
+                [(or (= (saved-errno) EAGAIN)
+                     (= (saved-errno) EINTR))
+                 (*wait ptr ZMQ_POLLOUT)
                  (sendframe frame n options)]
-                ;; [(= (saved-errno) EINTR) ...]
                 [else
                  (error 'zmq-send "error sending message\n  frame: ~s of ~s~a"
                         n (length frames) (errno-lines))])))
       (let loop ([frames frames] [n 1])
         (cond [(null? (cdr frames)) ;; last frame
-               (sendframe (car frames) n '())]
+               (sendframe (car frames) n '(ZMQ_DONTWAIT))]
               [else
-               (sendframe (car frames) n '(ZMQ_SENDMORE))
+               (sendframe (car frames) n '(ZMQ_DONTWAIT ZMQ_SENDMORE))
                (loop (cdr frames) (add1 n))])))))
+
+(define (*wait ptr event)
+  (let ([events (zmq_getsockopt/int ptr 'events)])
+    (unless (bitwise-and events event)
+      (define fd (zmq_getsockopt/int ptr 'fd))
+      (define fd-evt (scheme_fd_to_semaphore fd MZFD_CREATE_READ #f)) ;; FIXME
+      (sync fd-evt)
+      (scheme_fd_to_semaphore fd MZFD_REMOVE)
+      (*wait ptr event))))
 
 (define (zmq-recv* sock
                    #:who [who 'zmq-recv*])
@@ -157,7 +167,7 @@
           (unless (zero? s)
             (error who "error initializing message~a" (errno-lines))))
         (let recvloop ()
-          (let ([s (zmq_msg_recv msg ptr '())])
+          (let ([s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT))])
             (cond [(>= s 0)
                    (define size (zmq_msg_size msg))
                    (define frame (make-bytes size))
@@ -165,9 +175,9 @@
                    (define more? (zmq_msg_more msg))
                    (zmq_msg_close msg)
                    (values frame more?)]
-                  [(= (saved-errno) EAGAIN)
-                   (eprintf "got EAGAIN, retrying\n")
-                   (sleep 0.001)
+                  [(or (= (saved-errno) EAGAIN)
+                       (= (saved-errno) EINTR))
+                   (*wait ptr ZMQ_POLLIN)
                    (recvloop)]
                   [else
                    (zmq_msg_close msg)

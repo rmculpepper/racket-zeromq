@@ -8,10 +8,6 @@
 ;; There is one implicit context created on demand, only finalized
 ;; when the namespace goes away.
 
-;; A Context is (context _zmq_ctx-pointer Real)
-;; Destroying will not block if (current-inexact-milliseconds) >= keepuntil.
-(struct context (ptr [keepuntil #:mutable]))
-
 (define the-ctx #f)
 
 ;; get-ctx : -> Context
@@ -22,7 +18,7 @@
     (register-finalizer ctx
       (lambda (ctx)
         (zmq_ctx_destroy ctx)))
-    (set! the-ctx (zmq_ctx_new)))
+    (set! the-ctx ctx))
   the-ctx)
 
 ;; ============================================================
@@ -39,7 +35,11 @@
 (define (zmq-socket? v) (socket? v))
 
 ;; zmq-socket : -> Socket
-(define (zmq-socket type)
+(define (zmq-socket type
+                    #:identity [identity #f]
+                    #:bind [bind-addrs null]
+                    #:connect [connect-addr null]
+                    #:subscribe [subscribe null])
   (start-atomic)
   (define ctx (get-ctx))
   (define ptr (zmq_socket ctx type))
@@ -51,11 +51,17 @@
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (*close 'zmq-socket-finalizer sock)))
   (end-atomic)
-  ;; (zmq-set-option sock 'linger 1000)
+  ;; Set options, etc.
+  (zmq-set-option sock 'linger 1000)
+  (when identity (zmq-set-option sock 'identity identity)) ;; FIXME: contract
+  (apply zmq-subscribe sock (coerce->list subscriptions))
+  (apply zmq-bind sock (coerce->list bind-addrs))
+  (apply zmq-connect (coerce->list connect-addrs))
   sock)
 
 (define (zmq-get-option sock option
                         #:who [who 'zmq-get-option])
+  ;; FIXME: move check outside
   (call-with-semaphore (socket-sema sock)
     (lambda ()
       (define ptr (socket-ptr* who sock))
@@ -70,6 +76,7 @@
 
 (define (zmq-set-option sock option value
                         #:who [who 'zmq-set-option])
+  ;; FIXME: add check outside
   (call-with-semaphore (socket-sema sock)
     (lambda ()
       (define ptr (socket-ptr* who sock))
@@ -83,40 +90,65 @@
         (void)))))
 
 (define (zmq-connect sock . addrs)
-  (call-with-semaphore (socket-sema sock)
-    (lambda ()
-      (define ptr (socket-ptr* 'zmq-connect sock))
-      (for ([addr (in-list addrs)])
-        (let ([s (zmq_connect ptr addr)])
-          (unless (zero? s)
-            (error 'zmq-connect "error connecting socket\n  address: ~e~a" addr (errno-lines)))
-          (void))))))
+  (when (pair? addrs)
+    (call-with-semaphore (socket-sema sock)
+      (lambda ()
+        (define ptr (socket-ptr* 'zmq-connect sock))
+        (for ([addr (in-list addrs)])
+          (let ([s (zmq_connect ptr addr)])
+            (unless (zero? s)
+              (error 'zmq-connect "error connecting socket\n  address: ~e~a" addr (errno-lines)))
+            (void)))))))
 
 (define (zmq-bind sock . addrs)
-  (call-with-semaphore (socket-sema sock)
-    (lambda ()
-      (define ptr (socket-ptr* 'zmq-bind sock))
-      (for ([addr (in-list addrs)])
-        (let ([s (zmq_bind ptr addr)])
-          (unless (zero? s)
-            (error 'zmq-bind "error binding socket\n  address: ~e~a" addr (errno-lines)))
-          (void))))))
+  (when (pair? addrs)
+    (call-with-semaphore (socket-sema sock)
+      (lambda ()
+        (define ptr (socket-ptr* 'zmq-bind sock))
+        (for ([addr (in-list addrs)])
+          (let ([s (zmq_bind ptr addr)])
+            (unless (zero? s)
+              (error 'zmq-bind "error binding socket\n  address: ~e~a" addr (errno-lines)))
+            (void)))))))
 
 (define (zmq-close sock)
   (call-as-atomic
    (lambda ()
      (*close 'zmq-close sock))))
 
+(define wait-fd-is-socket? (eq? (system-type) 'windows))
+
+;; PRE: in atomic mode
 (define (*close who sock)
   (let ([ptr (socket-ptr sock)])
     (when ptr
       (set-socket-ptr! sock #f)
+      (define fd (zmq_getsockopt/int ptr 'fd))
+      (scheme_fd_to_semaphore fd MZFD_CREATE_READ wait-fd-is-socket?)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
           (error 'zmq-close "error closing socket~a" (errno-lines)))))))
 
+(define (zmq-subscribe sock . subs)
+  (*subscribe 'zmq-subscribe 'subscribe sock subs))
+(define (zmq-unsubscribe sock . subs)
+  (*subscribe 'zmq-unsubscribe 'unsubscribe sock subs))
+
+(define (*subscribe who mode sock subs)
+  (when (pair? subs)
+    (call-with-semaphore (socket-sema sock)
+      (lambda ()
+        (define ptr (socket-ptr* who sock))
+        (for ([sub (in-list subs)])
+          (let ([s (zmq_setsockopt/bytes ptr mode sub)])
+            (unless (zero? s)
+              (error who "error~a" (errno-lines)))))))))
+
 (define (errno-lines)
   (format "\n  errno: ~s\n  error: ~.a" (saved-errno) (zmq_strerror (saved-errno))))
+
+(define (coerce->list x) (if (list? x) x (list x)))
+(define (coerce->bytes x) (if (string? x) (string->bytes/utf-8 x) x))
 
 ;; ============================================================
 
@@ -124,9 +156,7 @@
 
 ;; zmq-send : Socket MsgPart ... -> Void
 (define (zmq-send sock part1 . parts)
-  (define frames
-    (for/list ([part (in-list (cons part1 parts))])
-      (if (string? part) (string->bytes/utf-8 part) part)))
+  (define frames (map coerce->bytes (cons part1 parts)))
   (call-with-semaphore (socket-sema sock)
     (lambda ()
       (define ptr (socket-ptr* 'zmq-send sock))
@@ -148,13 +178,12 @@
                (loop (cdr frames) (add1 n))])))))
 
 (define (*wait ptr event)
-  (let ([events (zmq_getsockopt/int ptr 'events)])
-    (unless (bitwise-and events event)
-      (define fd (zmq_getsockopt/int ptr 'fd))
-      (define fd-evt (scheme_fd_to_semaphore fd MZFD_CREATE_READ #f)) ;; FIXME
-      (sync fd-evt)
-      (scheme_fd_to_semaphore fd MZFD_REMOVE)
-      (*wait ptr event))))
+  (let loop ()
+    (let ([events (zmq_getsockopt/int ptr 'events)])
+      (unless (bitwise-and events event)
+        (define fd (zmq_getsockopt/int ptr 'fd))
+        (sync (scheme_fd_to_semaphore fd MZFD_CREATE_READ #f))
+        (loop)))))
 
 (define (zmq-recv* sock
                    #:who [who 'zmq-recv*])
@@ -189,9 +218,13 @@
               (loop rframes (add1 n))
               (reverse rframes)))))))
 
-(define (zmq-recv sock)
-  (define frames (zmq-recv* sock #:who 'zmq-recv))
+(define (zmq-recv sock #:who [who 'zmq-recv])
+  (define frames (zmq-recv* sock #:who who))
   (cond [(and (pair? frames) (null? (cdr frames)))
          (car frames)]
         [else
-         (error 'zmq-recv "received multi-frame message\n  frames: ~s" (length frames))]))
+         (error who "received multi-frame message\n  frames: ~s" (length frames))]))
+
+(define (zmq-recv-string sock)
+  (define msg (zmq-recv sock #:who 'zmq-recv-string))
+  (bytes->string/utf-8 msg))

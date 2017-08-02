@@ -181,13 +181,13 @@
 
 (define-zmq zmq_getsockopt/bytes
   (_fun* #:retry (retry [buflen 256] [first-try? #t])
-         (sock opt) ::
+         (sock opt [dlen 0]) ::
          (sock : _zmq_socket-pointer)
          (opt : _zmq_socket_option)
          (buf : _bytes = (make-bytes buflen))
          (len : (_ptr io _size) = buflen)
          -> (status : _int)
-         -> (cond [(zero? status) (subbytes buf 0 len)]
+         -> (cond [(zero? status) (subbytes buf 0 (max 0 (+ len dlen)))]
                   [(and (= (saved-errno) EINVAL) first-try?)
                    (retry len #f)]
                   [(= (saved-errno) EINTR)

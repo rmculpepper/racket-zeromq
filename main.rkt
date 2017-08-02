@@ -32,7 +32,7 @@
 
 ;; A Socket is (socket (U _zmq_socket-pointer #f (Listof CommEntry)) _zmq_msg-pointer Sema)
 ;; The zmq_msg is kept uninitialized/closed except during zmq-recv.
-;; A CommEntry is (cons 'bind String) | (cons 'connect String) | (cons 'subscribe Bytes)
+;; A CommEntry is (cons 'bind String) | (cons 'connect String)
 (struct socket ([ptr #:mutable] msg sema [comms #:mutable])
   #:property prop:custom-write
   (make-constructor-style-printer
@@ -97,6 +97,7 @@
   (let ([ptr (socket-ptr sock)])
     (when ptr
       (set-socket-ptr! sock #f)
+      (set-socket-comms! sock null)
       (define fd (zmq_getsockopt/int ptr 'fd))
       (scheme_fd_to_semaphore fd MZFD_REMOVE (wait-fd-is-socket?))
       (let ([s (zmq_close ptr)])
@@ -162,33 +163,46 @@
 ;; ----------------------------------------
 ;; Connect and Bind
 
-(define (zmq-connect sock . addrs)
+(define (zmq-connect sock . addrs) (bind/connect 'zmq-connect sock addrs 'connect))
+(define (zmq-bind sock . addrs) (bind/connect 'zmq-bind sock addrs 'bind))
+
+(define (bind/connect who sock addrs mode)
   (when (pair? addrs)
-    (call-with-socket-ptr 'zmq-connect sock
+    (call-with-socket-ptr who sock
       (lambda (ptr)
         (for ([addr (in-list addrs)])
-          (let ([s (zmq_connect ptr addr)])
+          (let ([s (case mode
+                     [(bind) (zmq_bind ptr addr)]
+                     [(connect) (zmq_connect ptr addr)])])
             (unless (zero? s)
-              (error 'zmq-connect "error connecting socket\n  address: ~e~a" addr (errno-lines)))
-            (-add-comm! sock ptr 'connect addr)))))))
+              (error who "error ~aing socket\n  address: ~e~a" mode addr (errno-lines)))
+            (-add-comm! sock ptr mode addr)))))))
 
-(define (zmq-bind sock . addrs)
+(define (zmq-disconnect sock . addrs) (unbind/disconnect 'zmq-disconnect sock addrs 'connect))
+(define (zmq-unbind sock . addrs) (unbind/disconnect 'zmq-unbind sock addrs 'bind))
+
+(define (unbind/disconnect who sock addrs mode)
   (when (pair? addrs)
-    (call-with-socket-ptr 'zmq-bind sock
+    (call-with-socket-ptr who sock
       (lambda (ptr)
         (for ([addr (in-list addrs)])
-          (let ([s (zmq_bind ptr addr)])
+          (let ([s (case mode
+                     [(bind) (zmq_unbind ptr addr)]
+                     [(connect) (zmq_disconnect ptr addr)])])
             (unless (zero? s)
-              (error 'zmq-bind "error binding socket\n  address: ~e~a" addr (errno-lines)))
-            (-add-comm! sock ptr 'bind addr)))))))
+              (error who "error ~a socket\n  address: ~e~a"
+                     (case mode [(bind) "unbinding"] [(connect) "disconnecting"])
+                     addr (errno-lines)))
+            (-sub-comm! sock ptr mode addr)))))))
 
-(define (-add-comm! sock ptr kind addr)
-  (define addr* (if (need-last-endpoint? addr)
-                    (bytes->string/utf-8 (zmq_getsockopt/bytes ptr 'last_endpoint))
+(define (-add-comm! sock ptr mode addr)
+  (define addr* (if (regexp-match? #rx"^(tcp|ipc):" addr)
+                    (bytes->string/utf-8 (zmq_getsockopt/bytes ptr 'last_endpoint -1))
                     addr))
-  (set-socket-comms! sock (cons (cons kind addr*) (socket-comms sock))))
+  (set-socket-comms! sock (cons (cons mode addr*) (socket-comms sock))))
 
-(define (need-last-endpoint? addr) (regexp-match? #rx"^(tcp|ipc):" addr))
+(define (-sub-comm! sock ptr mode addr)
+  (set-socket-comms! sock (remove (cons mode addr) (socket-comms sock))))
 
 ;; ----------------------------------------
 ;; Subscriptions

@@ -16,10 +16,16 @@
                 zmq-socket?)]
           [zmq-close
            (-> zmq-socket? void?)]
+          [zmq-closed?
+           (-> zmq-socket? boolean?)]
+          [zmq-list-endpoints
+           (-> zmq-socket? (or/c 'bind 'connect) (listof string?))]
           [zmq-get-option
            (-> zmq-socket? symbol? any/c)]
           [zmq-set-option
            (-> zmq-socket? symbol? (or/c exact-integer? bytes?) void?)]
+          [zmq-list-options
+           (-> (or/c 'get 'set) (listof symbol?))]
           [zmq-connect
            (->* [zmq-socket?] [] #:rest (listof connect-addr/c) void?)]
           [zmq-bind
@@ -29,7 +35,7 @@
           [zmq-unbind
            (->* [zmq-socket?] [] #:rest (listof bind-addr/c) void?)]
           [zmq-subscribe
-           (->* [zmq-socket?] [] #:rest (listof bytes?) void?)]
+           (->* [zmq-socket?] [] #:rest (listof subscription/c) void?)]
           [zmq-unsubscribe
            (->* [zmq-socket?] [] #:rest (listof bytes?) void?)]
           [zmq-send
@@ -47,13 +53,15 @@
   (or/c 'pair 'pub 'sub 'req 'rep 'dealer 'router 'pull 'push 'xpub 'xsub 'stream))
 (define bind-addr/c string?)
 (define connect-addr/c string?)
-(define subscription/c bytes?)
+(define subscription/c (or/c bytes? string?))
 (define msg-frame/c (or/c bytes? string?))
 
 ;; TODO:
 ;; - parse addrs enough to call security guard checks
 
 ;; Convention: procedures starting with "-" must be called in atomic mode.
+
+(define DEFAULT-LINGER 100)
 
 ;; ============================================================
 ;; Context
@@ -74,16 +82,14 @@
 ;; ============================================================
 ;; Socket
 
-;; A Socket is (socket (U _zmq_socket-pointer #f (Listof CommEntry)) _zmq_msg-pointer Sema)
+;; A Socket is (socket (U _zmq_socket-pointer #f (Listof Endpoint)) _zmq_msg-pointer Sema)
 ;; The zmq_msg is kept uninitialized/closed except during zmq-recv.
-;; A CommEntry is (cons 'bind String) | (cons 'connect String)
-(struct socket ([ptr #:mutable] msg sema [comms #:mutable])
+;; A Endpoint is (cons 'bind String) | (cons 'connect String)
+(struct socket ([ptr #:mutable] msg sema [ends #:mutable])
   #:property prop:custom-write
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
    (lambda (s)
-     (define (comms-get comms type)
-       (for/list ([c (in-list comms)] #:when (eq? (car c) type)) (cdr c)))
      (define-values (type identity)
        (call-as-atomic
         (lambda ()
@@ -92,8 +98,8 @@
                       (values (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type)
                               (zmq_getsockopt/bytes ptr 'identity)))]
                 [else (values 'closed #f)]))))
-     (define binds (comms-get (socket-comms s) 'bind))
-     (define connects (comms-get (socket-comms s) 'connect))
+     (define binds (ends-get (socket-ends s) 'bind))
+     (define connects (ends-get (socket-ends s) 'connect))
      (append (list type)
              (if (and identity (not (equal? identity #""))) (list (pp:lit "#:identity") identity) '())
              (if (pair? binds) (list (pp:lit "#:bind") binds) '())
@@ -125,8 +131,8 @@
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
   ;; Set options, etc.
-  (zmq-set-option sock 'linger 1000)
-  (when identity (zmq-set-option sock 'identity identity)) ;; FIXME: contract
+  (zmq-set-option sock 'linger DEFAULT-LINGER)
+  (when identity (zmq-set-option sock 'identity identity))
   (apply zmq-subscribe sock (coerce->list subscriptions))
   (apply zmq-bind sock (coerce->list bind-addrs))
   (apply zmq-connect sock (coerce->list connect-addrs))
@@ -141,7 +147,7 @@
   (let ([ptr (socket-ptr sock)])
     (when ptr
       (set-socket-ptr! sock #f)
-      (set-socket-comms! sock null)
+      (set-socket-ends! sock null)
       (define fd (zmq_getsockopt/int ptr 'fd))
       (scheme_fd_to_semaphore fd MZFD_REMOVE (wait-fd-is-socket?))
       (let ([s (zmq_close ptr)])
@@ -149,6 +155,15 @@
           (error who "error closing socket~a" (errno-lines)))))))
 
 (define (wait-fd-is-socket?) (eq? (system-type) 'windows))
+
+(define (zmq-closed? sock)
+  (call-as-atomic (lambda () (and (socket-ptr sock) #t))))
+
+(define (zmq-list-endpoints sock mode)
+  (ends-get (socket-ends sock) mode))
+
+(define (ends-get ends type)
+  (for/list ([c (in-list ends)] #:when (eq? (car c) type)) (cdr c)))
 
 ;; ----------------------------------------
 ;; Helpers
@@ -214,6 +229,12 @@
           (error who "error setting socket option\n  option: ~e\n  value: ~e~a"
                  option value (errno-lines)))))))
 
+(define (zmq-list-options mode)
+  (sort (for/list ([opt (in-hash-keys option-table)]
+                   #:when (case mode [(get) (socket-option-read? opt)] [(set) (socket-option-write? opt)]))
+          opt)
+        symbol<?))
+
 ;; ----------------------------------------
 ;; Connect and Bind
 
@@ -230,7 +251,7 @@
                      [(connect) (zmq_connect ptr addr)])])
             (unless (zero? s)
               (error who "error ~aing socket\n  address: ~e~a" mode addr (errno-lines)))
-            (-add-comm! sock ptr mode addr)))))))
+            (-add-end! sock ptr mode addr)))))))
 
 (define (zmq-disconnect sock . addrs) (unbind/disconnect 'zmq-disconnect sock addrs 'connect))
 (define (zmq-unbind sock . addrs) (unbind/disconnect 'zmq-unbind sock addrs 'bind))
@@ -247,24 +268,24 @@
               (error who "error ~a socket\n  address: ~e~a"
                      (case mode [(bind) "unbinding"] [(connect) "disconnecting"])
                      addr (errno-lines)))
-            (-sub-comm! sock ptr mode addr)))))))
+            (-sub-end! sock ptr mode addr)))))))
 
-(define (-add-comm! sock ptr mode addr)
+(define (-add-end! sock ptr mode addr)
   (define addr* (if (regexp-match? #rx"^(tcp|ipc):" addr)
                     (bytes->string/utf-8 (zmq_getsockopt/bytes ptr 'last_endpoint -1))
                     addr))
-  (set-socket-comms! sock (cons (cons mode addr*) (socket-comms sock))))
+  (set-socket-ends! sock (cons (cons mode addr*) (socket-ends sock))))
 
-(define (-sub-comm! sock ptr mode addr)
-  (set-socket-comms! sock (remove (cons mode addr) (socket-comms sock))))
+(define (-sub-end! sock ptr mode addr)
+  (set-socket-ends! sock (remove (cons mode addr) (socket-ends sock))))
 
 ;; ----------------------------------------
 ;; Subscriptions
 
 (define (zmq-subscribe sock . subs)
-  (*subscribe 'zmq-subscribe 'subscribe sock subs))
+  (*subscribe 'zmq-subscribe 'subscribe sock (map coerce->bytes subs)))
 (define (zmq-unsubscribe sock . subs)
-  (*subscribe 'zmq-unsubscribe 'unsubscribe sock subs))
+  (*subscribe 'zmq-unsubscribe 'unsubscribe sock (map coerce->bytes subs)))
 
 (define (*subscribe who mode sock subs)
   (when (pair? subs)

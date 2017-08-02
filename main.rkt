@@ -174,12 +174,17 @@
 
 (define (zmq-get-option sock option
                         #:who [who 'zmq-get-option])
-  (define option-type (get-option-type who option))
+  (define type (socket-option-type who option))
+  (unless (socket-option-read? option)
+    (error who "socket option is not readable\n  option: ~e" option))
   (call-with-socket-ptr who sock
     (lambda (ptr)
-      (let ([v (case option-type
-                 [(integer) (zmq_getsockopt/int ptr option)]
-                 [(bytes)   (zmq_getsockopt/bytes ptr option)])])
+      (let ([v (case type
+                 [(int)     (zmq_getsockopt/int ptr option)]
+                 [(int64)   (zmq_getsockopt/int64 ptr option)]
+                 [(uint64)  (zmq_getsockopt/uint64 ptr option)]
+                 [(bytes)   (zmq_getsockopt/bytes ptr option)]
+                 [(bytes0)  (zmq_getsockopt/bytes ptr option -1)])])
         (unless v
           (error who "error getting socket option\n  option: ~e~a"
                  option (errno-lines)))
@@ -187,22 +192,27 @@
 
 (define (zmq-set-option sock option value
                         #:who [who 'zmq-set-option])
+  (define type (socket-option-type who option))
+  (unless (socket-option-write? option)
+    (error who "socket option is not writable\n  option: ~e" option))
+  (define (check-value pred ctc)
+    (unless (pred value)
+      (error who "bad value for option\n  option: ~e\n  expected: ~a\n  given: ~e"
+             option ctc value)))
+  (case type
+    [(int) (check-value exact-integer? "exact-integer?")]
+    [(uint64) (check-value exact-nonnegative-integer? "exact-nonnegative-integer?")]
+    [(bytes bytes0) (check-value bytes? "bytes?")])
   (call-with-socket-ptr who sock
     (lambda (ptr)
-      (let ([s (cond [(exact-integer? value)
-                      (zmq_setsockopt/int ptr option value)]
-                     [(bytes? value)
-                      (zmq_setsockopt/bytes ptr option value)])])
+      (let ([s (case type
+                 [(int)    (zmq_setsockopt/int ptr option value)]
+                 [(int64)  (zmq_setsockopt/int64 ptr option value)]
+                 [(uint64) (zmq_setsockopt/uint64 ptr option value)]
+                 [(bytes bytes0) (zmq_setsockopt/bytes ptr option value)])])
         (unless (zero? s)
           (error who "error setting socket option\n  option: ~e\n  value: ~e~a"
-                 option value (errno-lines)))
-        (void)))))
-
-;; get-option-type : Symbol Symbol -> (U 'integer 'bytes)
-(define (get-option-type who option)
-  (cond [(memq option integer-socket-options) 'integer]
-        [(memq option bytes-socket-options) 'bytes]
-        [else (error who "unknown socket option\n  option: ~e" option)]))
+                 option value (errno-lines)))))))
 
 ;; ----------------------------------------
 ;; Connect and Bind

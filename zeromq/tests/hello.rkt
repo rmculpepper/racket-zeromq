@@ -1,6 +1,6 @@
 #lang racket
 (require rackunit
-         "../main.rkt")
+         zeromq)
 
 (define hello-server-thread
   (thread

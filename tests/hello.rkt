@@ -6,6 +6,7 @@
   (thread
    (lambda ()
      (define s (zmq-socket 'rep #:bind "tcp://*:5555"))
+     (printf "server = ~v\n" s)
      (let loop ()
        (define msg (zmq-recv s))
        ;; (printf "S got: ~v\n" msg)

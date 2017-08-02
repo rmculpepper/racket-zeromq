@@ -166,8 +166,7 @@
          (buf : _bytes = (make-bytes buflen))
          (len : (_ptr io _size) = buflen)
          -> (status : _int)
-         -> (cond [(zero? status)
-                   (if (= len buflen) buf (subbytes buf len))]
+         -> (cond [(zero? status) (subbytes buf 0 len)]
                   [(and (= (saved-errno) EINVAL) first-try?)
                    (retry len #f)]
                   [(= (saved-errno) EINTR)

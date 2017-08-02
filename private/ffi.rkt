@@ -5,13 +5,11 @@
          ffi/unsafe/define)
 (provide (protect-out (all-defined-out)))
 
+(define RETRY-COUNT 5)
+
 (define EAGAIN (lookup-errno 'EAGAIN))
 (define EINTR (lookup-errno 'EINTR))
 (define EINVAL 22) ;; FIXME
-
-
-(define-syntax-rule (_fun* part ...) (_fun #:save-errno 'posix part ...))
-
 
 ;; ========================================
 ;; Racket constants and functions
@@ -32,6 +30,18 @@
   (ffi-lib "libzmq" '(#f "5") #:fail (lambda () #f)) ;; FIXME: support v4?
   #:default-make-fail make-not-available)
 
+(define-syntax-rule (_fun* part ...) (_fun #:save-errno 'posix part ...))
+
+;; ----------------------------------------
+;; Types
+
+(define-cpointer-type _zmq_ctx-pointer)
+(define-cpointer-type _zmq_socket-pointer)
+(define-cpointer-type _zmq_msg-pointer)
+
+;; ----------------------------------------
+;; Constants and Enumerations
+
 (define _zmq_socket_type
   (_enum '(pair = 0
            pub  = 1
@@ -46,44 +56,6 @@
            xsub = 10
            stream = 11)
          _int))
-
-(define-cpointer-type _zmq_ctx-pointer)
-(define-cpointer-type _zmq_socket-pointer)
-
-(define-zmq zmq_version
-  (_fun (major : (_ptr o _int))
-        (minor : (_ptr o _int))
-        (patch : (_ptr o _int))
-        -> _void
-        -> (list major minor patch)))
-
-;; ----
-
-(define-zmq zmq_ctx_new
-  (_fun* -> _zmq_ctx-pointer/null))
-
-(define-zmq zmq_ctx_destroy
-  (_fun* _zmq_ctx-pointer -> _int))
-
-;; ----
-
-(define-zmq zmq_socket
-  (_fun* _zmq_ctx-pointer _zmq_socket_type -> _zmq_socket-pointer/null))
-
-(define-zmq zmq_connect
-  (_fun* _zmq_socket-pointer _string -> _int))
-
-(define-zmq zmq_disconnect
-  (_fun* _zmq_socket-pointer _string -> _int))
-
-(define-zmq zmq_bind
-  (_fun* _zmq_socket-pointer _string -> _int))
-
-(define-zmq zmq_unbind
-  (_fun* _zmq_socket-pointer _string -> _int))
-
-(define-zmq zmq_close
-  (_fun* _zmq_socket-pointer -> _int))
 
 (define _zmq_socket_option
   (_enum '(
@@ -139,11 +111,60 @@
 (define ZMQ_POLLIN  1)
 (define ZMQ_POLLOUT 2)
 
-;; FIXME
-(define integer-socket-options '(linger fd events type))
-(define bytes-socket-options '(identity))
+(define integer-socket-options '(fd events type linger ipv6))
+(define bytes-socket-options '(identity last_endpoint))
 
-(define RETRY-COUNT 5)
+(define ZMQ-MSG-SIZE 64)
+
+(define _zmq_sendrecv_flags
+  (_bitmask '(
+              ZMQ_DONTWAIT = 1
+              ZMQ_SNDMORE  = 2
+              )
+            _int))
+
+;; ----------------------------------------
+;; Misc
+
+(define-zmq zmq_version
+  (_fun (major : (_ptr o _int))
+        (minor : (_ptr o _int))
+        (patch : (_ptr o _int))
+        -> _void
+        -> (list major minor patch)))
+
+(define-zmq zmq_strerror
+  (_fun _int -> _string))
+
+;; ----------------------------------------
+;; Contexts
+
+(define-zmq zmq_ctx_new
+  (_fun* -> _zmq_ctx-pointer/null))
+
+(define-zmq zmq_ctx_destroy
+  (_fun* _zmq_ctx-pointer -> _int))
+
+;; ----------------------------------------
+;; Sockets
+
+(define-zmq zmq_socket
+  (_fun* _zmq_ctx-pointer _zmq_socket_type -> _zmq_socket-pointer/null))
+
+(define-zmq zmq_connect
+  (_fun* _zmq_socket-pointer _string -> _int))
+
+(define-zmq zmq_disconnect
+  (_fun* _zmq_socket-pointer _string -> _int))
+
+(define-zmq zmq_bind
+  (_fun* _zmq_socket-pointer _string -> _int))
+
+(define-zmq zmq_unbind
+  (_fun* _zmq_socket-pointer _string -> _int))
+
+(define-zmq zmq_close
+  (_fun* _zmq_socket-pointer -> _int))
 
 (define-zmq zmq_getsockopt/int
   (_fun* #:retry (retry [count 0])
@@ -189,14 +210,8 @@
          (_size = (bytes-length buf))
          -> _int))
 
-(define-zmq zmq_strerror
-  (_fun _int -> _string))
-
-;; ----
-
-(define ZMQ-MSG-SIZE 64)
-
-(define-cpointer-type _zmq_msg-pointer)
+;; ----------------------------------------
+;; Messages
 
 (define-zmq zmq_msg_close
   (_fun* _zmq_msg-pointer -> _int)
@@ -219,13 +234,6 @@
 
 (define-zmq zmq_msg_more
   (_fun* _zmq_msg-pointer -> _bool))
-
-(define _zmq_sendrecv_flags
-  (_bitmask '(
-              ZMQ_DONTWAIT = 1
-              ZMQ_SNDMORE  = 2
-              )
-            _int))
 
 (define-zmq zmq_send
   (_fun* _zmq_socket-pointer

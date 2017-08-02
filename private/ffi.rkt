@@ -194,22 +194,25 @@
 
 ;; ----
 
-(define-cstruct _zmq_msg ((dummy (_array _byte 32)))
+(define ZMQ-MSG-SIZE 64)
+
+(define-cstruct _zmq_msg ((dummy (_array _byte ZMQ-MSG-SIZE)))
   #:malloc-mode 'atomic-interior)
 
 (define-zmq zmq_msg_close
-  (_fun* _zmq_msg-pointer -> _int))
+  (_fun* _zmq_msg-pointer -> _int)
+  #:wrap (deallocator))
 
 (define-zmq zmq_msg_init
-  (_fun* _zmq_msg-pointer -> _int))
+  (_fun (m : _zmq_msg-pointer) -> _int -> m)
+  #:wrap (allocator zmq_msg_close))
 
-(define new-zmq_msg ;; note: might be slow due to call-as-atomic
-  ((allocator zmq_msg_close)
-   (lambda ()
-     (define msg (cast (malloc 'atomic-interior _zmq_msg) _pointer _zmq_msg-pointer))
-     (define r (zmq_msg_init msg))
-     (cond [(= r 0) msg]
-           [else (error 'new-zmq_msg "message initialization failed\n  errno: ~s" (saved-errno))]))))
+(define new-zmq_msg
+  (let ([dummy (make-bytes ZMQ-MSG-SIZE 0)])
+    (lambda ()
+      (define msg (make-zmq_msg dummy))
+      (zmq_msg_init msg)
+      msg)))
 
 (define-zmq zmq_msg_data
   (_fun _zmq_msg-pointer -> _pointer))

@@ -14,23 +14,21 @@
    (apply hyperlink (format "http://zguide.zeromq.org/~a" url-suffix) pre-flow))
 
 This library provides bindings to the
-@hyperlink["http://zeromq.org"]{ZeroMQ} distributed messaging library.
+@hyperlink["http://zeromq.org"]{ZeroMQ} (or ``@as-index{0MQ}'') distributed messaging library.
 
 @defmodule[zeromq]
 
 This package is distributed under the
 @hyperlink["https://www.gnu.org/licenses/lgpl.html"]{GNU Lesser
 General Public License (LGPL)}. As a client of this library you must
-also comply with @hyperlink["http://zeromq.org/area:licensing"]{the
+also comply with the @hyperlink["http://zeromq.org/area:licensing"]{
 @tt{libzmq} license}.
-
-@section-index["0mq"]
 
 @; ----------------------------------------
 @section[#:tag "intro"]{ZeroMQ Examples}
 
 This section contains examples of using this library adapted from the
-@hyperlink["http://zguide.zeromq.org/page:all"]{ZeroMQ Guide}.
+@hyperlink["http://zguide.zeromq.org/page:all"]{0MQ Guide}.
 
 @subsection[#:tag "hello-world"]{Hello World in ZeroMQ}
 
@@ -123,6 +121,10 @@ Returns @racket[#t] if @racket[v] is a ZMQ socket, @racket[#f] otherwise.
 Creates a new ZMQ socket of the given socket @racket[type] and
 initializes it with @racket[identity], @racket[subscriptions],
 @racket[bind-addrs], and @racket[connect-addrs] (in that order).
+
+See the @zmqlink["zmq-socket"]{zmq_socket} documentation for brief
+descriptions of the different @racket[type]s of sockets, and see the
+@zglink["page:all"]{0MQ Guide} for more detailed explanations.
 
 Unlike @tt{libzmq}, @racket[zmq-socket] creates sockets with a short
 default ``linger'' period (@tt{ZMQ_LINGER}), to avoid blocking the

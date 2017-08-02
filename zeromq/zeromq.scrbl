@@ -18,6 +18,12 @@ This library provides bindings to the
 
 @defmodule[zeromq]
 
+This package is distributed under the
+@hyperlink["https://www.gnu.org/licenses/lgpl.html"]{GNU Lesser
+General Public License (LGPL)}. As a client of this library you must
+also comply with @hyperlink["http://zeromq.org/area:licensing"]{the
+@tt{libzmq} license}.
+
 @section-index["0mq"]
 
 @; ----------------------------------------

@@ -29,7 +29,7 @@
 ;; ZeroMQ constants and functions
 
 (define-ffi-definer define-zmq
-  (ffi-lib "libzmq" '("3" #f) #:fail (lambda () #f)) ;; FIXME: support v4?
+  (ffi-lib "libzmq" '(#f "5") #:fail (lambda () #f)) ;; FIXME: support v4?
   #:default-make-fail make-not-available)
 
 (define _zmq_socket_type

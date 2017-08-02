@@ -1,5 +1,6 @@
 #lang racket/base
-(require ffi/unsafe
+(require racket/struct
+         ffi/unsafe
          ffi/unsafe/atomic
          ffi/unsafe/custodian
          "private/ffi.rkt")
@@ -15,17 +16,40 @@
 (define (get-ctx)
   (unless the-ctx
     (define ctx (zmq_ctx_new))
-    (register-finalizer ctx
-      (lambda (ctx)
-        (zmq_ctx_destroy ctx)))
+    (register-finalizer ctx zmq_ctx_destroy)
     (set! the-ctx ctx))
   the-ctx)
 
 ;; ============================================================
 
-;; A Socket is (socket (U _zmq_socket-pointer #f) _zmq_msg-pointer Sema)
-(struct socket ([ptr #:mutable] msg sema)
-  #:reflection-name 'zmq-socket)
+;; A Socket is (socket (U _zmq_socket-pointer #f (Listof CommEntry)) _zmq_msg-pointer Sema)
+;; The zmq_msg is kept uninitialized/closed except during zmq-recv.
+;; A CommEntry is (cons 'bind String) | (cons 'connect String) | (cons 'subscribe Bytes)
+(struct socket ([ptr #:mutable] msg sema [comms #:mutable])
+  #:reflection-name 'zmq-socket
+  #:property prop:custom-write
+  (make-constructor-style-printer
+   (lambda (s) 'zmq-socket)
+   (lambda (s)
+     (define (comms-get comms type)
+       (for/list ([c (in-list comms)] #:when (eq? (car c) type)) (cdr c)))
+     (define-values (type identity)
+       (call-as-atomic
+        (lambda ()
+          (cond [(socket-ptr s)
+                 => (lambda (ptr)
+                      (values (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type)
+                              (zmq_getsockopt/bytes ptr 'identity)))]
+                [else (values 'closed #f)]))))
+     (define binds (comms-get (socket-comms s) 'bind))
+     (define connects (comms-get (socket-comms s) 'connect))
+     (append (list type)
+             (if (and identity (not (equal? identity #""))) (list (pp:lit "#:identity") identity) '())
+             (if (pair? binds) (list (pp:lit "#:bind") binds) '())
+             (if (pair? connects) (list (pp:lit "#:connect") connects) '())))))
+
+(struct pp:lit (str)
+  #:property prop:custom-write (lambda (self out mode) (write-string (pp:lit-str self) out)))
 
 (define (socket-ptr* who sock)
   (let ([ptr (socket-ptr sock)])
@@ -38,16 +62,16 @@
 (define (zmq-socket type
                     #:identity [identity #f]
                     #:bind [bind-addrs null]
-                    #:connect [connect-addr null]
-                    #:subscribe [subscribe null])
+                    #:connect [connect-addrs null]
+                    #:subscribe [subscriptions null])
   (start-atomic)
   (define ctx (get-ctx))
   (define ptr (zmq_socket ctx type))
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define msg (cast (malloc 'atomic-interior _zmq_msg) _pointer _zmq_msg-pointer))
-  (define sock (socket ptr msg (make-semaphore 1)))
+  (define msg (new-zmq_msg))
+  (define sock (socket ptr msg (make-semaphore 1) null))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (*close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -56,7 +80,7 @@
   (when identity (zmq-set-option sock 'identity identity)) ;; FIXME: contract
   (apply zmq-subscribe sock (coerce->list subscriptions))
   (apply zmq-bind sock (coerce->list bind-addrs))
-  (apply zmq-connect (coerce->list connect-addrs))
+  (apply zmq-connect sock (coerce->list connect-addrs))
   sock)
 
 (define (zmq-get-option sock option
@@ -98,7 +122,8 @@
           (let ([s (zmq_connect ptr addr)])
             (unless (zero? s)
               (error 'zmq-connect "error connecting socket\n  address: ~e~a" addr (errno-lines)))
-            (void)))))))
+            ;; FIXME: need to check last_endpoint on some kinds of connections
+            (set-socket-comms! sock (cons (cons 'connect addr) (socket-comms sock)))))))))
 
 (define (zmq-bind sock . addrs)
   (when (pair? addrs)
@@ -109,7 +134,8 @@
           (let ([s (zmq_bind ptr addr)])
             (unless (zero? s)
               (error 'zmq-bind "error binding socket\n  address: ~e~a" addr (errno-lines)))
-            (void)))))))
+            ;; FIXME: need to check last_endpoint on some kinds of binds
+            (set-socket-comms! sock (cons (cons 'bind addr) (socket-comms sock)))))))))
 
 (define (zmq-close sock)
   (call-as-atomic
@@ -124,7 +150,7 @@
     (when ptr
       (set-socket-ptr! sock #f)
       (define fd (zmq_getsockopt/int ptr 'fd))
-      (scheme_fd_to_semaphore fd MZFD_CREATE_READ wait-fd-is-socket?)
+      (scheme_fd_to_semaphore fd MZFD_REMOVE wait-fd-is-socket?)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
           (error 'zmq-close "error closing socket~a" (errno-lines)))))))
@@ -192,9 +218,7 @@
       (define ptr (socket-ptr* who sock))
       (define msg (socket-msg sock))
       (define (recvframe n)
-        (let ([s (zmq_msg_init msg)])
-          (unless (zero? s)
-            (error who "error initializing message~a" (errno-lines))))
+        (zmq_msg_init msg)
         (let recvloop ()
           (let ([s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT))])
             (cond [(>= s 0)

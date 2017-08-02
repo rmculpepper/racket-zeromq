@@ -6,6 +6,9 @@
          "private/ffi.rkt")
 (provide (all-defined-out))
 
+;; TODO:
+;; - parse addrs enough to call security guard checks
+
 ;; Convention: procedures starting with "-" must be called in atomic mode.
 
 ;; ============================================================
@@ -180,9 +183,12 @@
             (-add-comm! sock ptr 'bind addr)))))))
 
 (define (-add-comm! sock ptr kind addr)
-  ;; FIXME: need to check last_endpoint on some kinds of binds
-  (define addr* (zmq_getsockopt/bytes ptr 'last_endpoint))
-  (set-socket-comms! sock (cons (list* kind addr addr*) (socket-comms sock))))
+  (define addr* (if (need-last-endpoint? addr)
+                    (bytes->string/utf-8 (zmq_getsockopt/bytes ptr 'last_endpoint))
+                    addr))
+  (set-socket-comms! sock (cons (cons kind addr*) (socket-comms sock))))
+
+(define (need-last-endpoint? addr) (regexp-match? #rx"^(tcp|ipc):" addr))
 
 ;; ----------------------------------------
 ;; Subscriptions

@@ -390,8 +390,9 @@
            (recv-frames who sock msg rframes))]
         [else
          (lambda ()
-           (error who "error receiving message\n  frame: ~s~a"
-                  (add1 (length rframes)) (errno-lines)))]))
+           (error who "error receiving message~a~a"
+                  (let ([ct (length rframes)]) (if (zero? ct) "" (format "\n  frame: ~s" (add1 ct))))
+                  (errno-lines)))]))
 
 (define (-get-msg-frame msg)
   (define size (zmq_msg_size msg))

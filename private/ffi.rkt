@@ -269,7 +269,8 @@
          _zmq_socket_option
          (buf : _bytes)
          (_size = (bytes-length buf))
-         -> _int))
+         -> _int)
+  #:c-id zmq_setsockopt)
 
 ;; ----------------------------------------
 ;; Messages

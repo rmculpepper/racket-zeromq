@@ -57,6 +57,9 @@
 (define msg-frame/c (or/c bytes? string?))
 
 ;; TODO:
+;; - better integration with evt system
+;;   - add timeout/evt to recv?
+;;   - add maybe-recv-evt?
 ;; - parse addrs enough to call security guard checks
 
 ;; Convention: procedures starting with "-" must be called in atomic mode.

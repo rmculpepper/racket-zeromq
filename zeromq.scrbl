@@ -18,6 +18,8 @@ This library provides bindings to the
 
 @defmodule[zeromq]
 
+@section-index["0mq"]
+
 @; ----------------------------------------
 @section[#:tag "intro"]{ZeroMQ Examples}
 

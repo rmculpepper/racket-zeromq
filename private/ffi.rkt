@@ -140,7 +140,7 @@
 (define ZMQ_POLLOUT 2)
 
 ;; FIXME
-(define integer-socket-options '(linger fd events))
+(define integer-socket-options '(linger fd events type))
 (define bytes-socket-options '(identity))
 
 (define RETRY-COUNT 5)
@@ -196,8 +196,7 @@
 
 (define ZMQ-MSG-SIZE 64)
 
-(define-cstruct _zmq_msg ((dummy (_array _byte ZMQ-MSG-SIZE)))
-  #:malloc-mode 'atomic-interior)
+(define-cpointer-type _zmq_msg-pointer)
 
 (define-zmq zmq_msg_close
   (_fun* _zmq_msg-pointer -> _int)
@@ -207,12 +206,10 @@
   (_fun (m : _zmq_msg-pointer) -> _int -> m)
   #:wrap (allocator zmq_msg_close))
 
-(define new-zmq_msg
-  (let ([dummy (make-bytes ZMQ-MSG-SIZE 0)])
-    (lambda ()
-      (define msg (make-zmq_msg dummy))
-      (zmq_msg_init msg)
-      msg)))
+(define (new-zmq_msg)
+  (define msg (cast (malloc ZMQ-MSG-SIZE 'atomic-interior) _pointer _zmq_msg-pointer))
+  (zmq_msg_init msg)
+  msg)
 
 (define-zmq zmq_msg_data
   (_fun _zmq_msg-pointer -> _pointer))

@@ -173,29 +173,70 @@ Lists the options that this library supports for
 @deftogether[[
 @defproc[(zmq-connect [s zmq-socket?] [addr string?] ...) void?]
 @defproc[(zmq-bind    [s zmq-socket?] [addr string?] ...) void?]
+]]{
+
+Connect or bind the socket @racket[s] to the given address @racket[addr].
+
+See the transport documentation pages (@zmqlink["zmq-tcp"]{tcp},
+@zmqlink["zmq-pgm"]{pgm}, @zmqlink["zmq-ipc"]{ipc},
+@zmqlink["zmq-inproc"]{inproc}, @zmqlink["zmq-vmci"]{vmci},
+@zmqlink["zmq-udp"]{udp}) for more information about transports and
+the notation they use for @racket[addr].
+}
+
+@deftogether[[
 @defproc[(zmq-disconnect [s zmq-socket?] [addr string?] ...) void?]
 @defproc[(zmq-unbind     [s zmq-socket?] [addr string?] ...) void?]
 ]]{
 
+Disconnect or unbind the socket @racket[s] from the given address
+@racket[addr].
+
+Note that in some cases @racket[addr] must be more specific than the
+argument to @racket[zmq-bind] or @racket[zmq-connect]. For example, see
+the section labeled ``Unbinding wild-card address from a socket'' in
+@zmqlink["zmq-tcp"]{zmq_tcp}.
 }
 
 @deftogether[[
-@defproc[(zmq-subscribe   [s zmq-socket?] [subscription (or/c bytes? string?)] ...) void?]
-@defproc[(zmq-unsubscribe [s zmq-socket?] [subscription (or/c bytes? string?)] ...) void?]
+@defproc[(zmq-subscribe   [s zmq-socket?] [topic (or/c bytes? string?)] ...) void?]
+@defproc[(zmq-unsubscribe [s zmq-socket?] [topic (or/c bytes? string?)] ...) void?]
 ]]{
 
+Adds or removes @racket[topic] from a SUB (@racket['sub]) socket's
+subscription list. A SUB socket starts out with no subscriptions, and
+thus receives no messages.
+
+A @racket[topic] matches a message if @racket[topic] is a prefix of
+the message. The empty topic accepts all messages.
 }
 
-@deftogether[[
-@defproc[(zmq-send  [s zmq-socket?] [msg-frame (or/c bytes? string?)] ...+) void?]
-@defproc[(zmq-send* [s zmq-socket?] [msg (non-empty-listof (or/c bytes? string?))]) void?]
-]]{
+@defproc[(zmq-send  [s zmq-socket?] [msg-frame (or/c bytes? string?)] ...+) void?]{
 
+Sends a message on socket @racket[s]. The message has as many frames
+as @racket[msg-frame] arguments, with at least one frame required.
+}
+
+@defproc[(zmq-send* [s zmq-socket?] [msg (non-empty-listof (or/c bytes? string?))]) void?]{
+
+Sends the message @racket[msg] on socket @racket[s], where
+@racket[msg] consists of a non-empty list of frames.
 }
 
 @deftogether[[
 @defproc[(zmq-recv  [s zmq-socket?]) bytes?]
 @defproc[(zmq-recv-string [s zmq-socket?]) string?]
-]]
+]]{
 
-@defproc[(zmq-recv* [s zmq-socket?]) (listof bytes?)]
+Receives a one-frame message from the socket @racket[s] and returns
+the single frame as a byte string or character string, respectively.
+
+If a multi-frame message is received from @racket[s], an error is
+raised. (The message is still consumed.)
+}
+
+@defproc[(zmq-recv* [s zmq-socket?]) (listof bytes?)]{
+
+Receives a message from the socket @racket[s]. The message is
+represented as a list of byte strings, one for each frame.
+}

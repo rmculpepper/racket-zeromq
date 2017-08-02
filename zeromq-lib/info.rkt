@@ -5,13 +5,9 @@
 
 (define collection "zeromq")
 (define deps
-  '(["base"]))
-(define build-deps
-  '("racket-doc"
-    "scribble-lib"))
+  '("base"))
 
 ;; ========================================
 ;; collect info
 
 (define name "zeromq")
-(define scribblings '(["zeromq.scrbl" ()]))

@@ -1,10 +1,54 @@
 #lang racket/base
-(require racket/struct
-         ffi/unsafe
+(require racket/contract/base
+         racket/struct
+         (except-in ffi/unsafe ->)
          ffi/unsafe/atomic
          ffi/unsafe/custodian
          "private/ffi.rkt")
-(provide (all-defined-out))
+(provide zmq-socket?
+         (contract-out
+          [zmq-socket
+           (->* [socket-type/c]
+                [#:identity (or/c bytes? #f)
+                 #:bind (or/c bind-addr/c (listof bind-addr/c))
+                 #:connect (or/c connect-addr/c (listof connect-addr/c))
+                 #:subscribe (or/c subscription/c (listof subscription/c))]
+                zmq-socket?)]
+          [zmq-close
+           (-> zmq-socket? void?)]
+          [zmq-get-option
+           (-> zmq-socket? symbol? any/c)]
+          [zmq-set-option
+           (-> zmq-socket? symbol? (or/c exact-integer? bytes?) void?)]
+          [zmq-connect
+           (->* [zmq-socket?] [] #:rest (listof connect-addr/c) void?)]
+          [zmq-bind
+           (->* [zmq-socket?] [] #:rest (listof bind-addr/c) void?)]
+          [zmq-disconnect
+           (->* [zmq-socket?] [] #:rest (listof connect-addr/c) void?)]
+          [zmq-unbind
+           (->* [zmq-socket?] [] #:rest (listof bind-addr/c) void?)]
+          [zmq-subscribe
+           (->* [zmq-socket?] [] #:rest (listof bytes?) void?)]
+          [zmq-unsubscribe
+           (->* [zmq-socket?] [] #:rest (listof bytes?) void?)]
+          [zmq-send
+           (->* [zmq-socket? msg-frame/c] [] #:rest (listof msg-frame/c) void?)]
+          [zmq-send*
+           (-> zmq-socket? (non-empty-listof msg-frame/c) void?)]
+          [zmq-recv
+           (-> zmq-socket? bytes?)]
+          [zmq-recv-string
+           (-> zmq-socket? string?)]
+          [zmq-recv*
+           (-> zmq-socket? (listof bytes?))]))
+
+(define socket-type/c
+  (or/c 'pair 'pub 'sub 'req 'rep 'dealer 'router 'pull 'push 'xpub 'xsub 'stream))
+(define bind-addr/c string?)
+(define connect-addr/c string?)
+(define subscription/c bytes?)
+(define msg-frame/c (or/c bytes? string?))
 
 ;; TODO:
 ;; - parse addrs enough to call security guard checks

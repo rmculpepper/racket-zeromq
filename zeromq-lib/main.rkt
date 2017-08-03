@@ -66,6 +66,8 @@
 
 (define DEFAULT-LINGER 100)
 
+(define-logger zmq)
+
 ;; ============================================================
 ;; Context
 
@@ -77,8 +79,12 @@
 ;; -get-ctx : -> Context
 (define (-get-ctx)
   (unless the-ctx
+    (log-zmq-debug "creating zmq_ctx")
     (define ctx (zmq_ctx_new))
-    (register-finalizer ctx zmq_ctx_destroy)
+    (register-finalizer ctx
+      (lambda (ctx)
+        (log-zmq-debug "destroying zmq_ctx")
+        (zmq_ctx_destroy ctx)))
     (set! the-ctx ctx))
   the-ctx)
 
@@ -149,13 +155,15 @@
 (define (-close who sock)
   (let ([ptr (socket-ptr sock)])
     (when ptr
+      (log-zmq-debug "closing socket (~a)"
+                     (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type))
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
       (define fd (zmq_getsockopt/int ptr 'fd))
       (scheme_fd_to_semaphore fd MZFD_REMOVE (wait-fd-is-socket?))
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
-          (error who "error closing socket~a" (errno-lines)))))))
+          (log-zmq-error "error closing socket~a" (errno-lines)))))))
 
 (define (wait-fd-is-socket?) (eq? (system-type) 'windows))
 
@@ -350,6 +358,7 @@
          (define fd (zmq_getsockopt/int ptr 'fd))
          (define fdsema (scheme_fd_to_semaphore fd MZFD_CREATE_READ #f))
          (end-atomic)
+         (log-zmq-debug "waiting (~s); about to sync on fd semaphore, fd = ~s" who fd)
          (sync fdsema)
          (wait who sock event)]))
 

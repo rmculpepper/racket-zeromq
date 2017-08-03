@@ -6,13 +6,13 @@
 (define collection "zeromq")
 (define deps
   '(["base" #:version "6.10"]
-    "zeromq-lib"
+    "zeromq-r-lib"
     "rackunit-lib"))
 (define build-deps
   '("racket-doc"
     "scribble-lib"))
 (define implies
-  '("zeromq-lib"))
+  '("zeromq-r-lib"))
 
 ;; ========================================
 ;; collect info

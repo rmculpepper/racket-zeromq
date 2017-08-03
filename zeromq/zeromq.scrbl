@@ -14,7 +14,8 @@
    (apply hyperlink (format "http://zguide.zeromq.org/~a" url-suffix) pre-flow))
 
 This library provides bindings to the
-@hyperlink["http://zeromq.org"]{ZeroMQ} (or ``@as-index{0MQ}'') distributed messaging library.
+@hyperlink["http://zeromq.org"]{ZeroMQ} (or ``@as-index{0MQ}'', or
+``@as-index{ZMQ}'') distributed messaging library.
 
 @defmodule[zeromq]
 
@@ -103,24 +104,24 @@ Here is the weather client:
 
 
 @; ----------------------------------------
-@section[#:tag "api"]{ZMQ Functions}
+@section[#:tag "api"]{ZeroMQ Functions}
 
 @defproc[(zmq-socket? [v any/c]) boolean?]{
 
-Returns @racket[#t] if @racket[v] is a ZMQ socket, @racket[#f] otherwise.
+Returns @racket[#t] if @racket[v] is a ZeroMQ socket, @racket[#f] otherwise.
 }
 
 @defproc[(zmq-socket [type (or/c 'pair 'pub 'sub 'req 'rep 'dealer 'router
                                  'pull 'push 'xpub 'xsub 'stream)]
                      [#:identity identity (or/c bytes? #f) #f]
-                     [#:bind bind-addrs (or/c string? (listof string?)) null]
-                     [#:connect connect-addrs (or/c string? (listof string?)) null]
+                     [#:bind bind-endpoints (or/c string? (listof string?)) null]
+                     [#:connect connect-endpoints (or/c string? (listof string?)) null]
                      [#:subscribe subscriptions (or/c bytes? string? (listof (or/c bytes? string?))) null])
          zmq-socket?]{
 
-Creates a new ZMQ socket of the given socket @racket[type] and
+Creates a new ZeroMQ socket of the given socket @racket[type] and
 initializes it with @racket[identity], @racket[subscriptions],
-@racket[bind-addrs], and @racket[connect-addrs] (in that order).
+@racket[bind-endpoints], and @racket[connect-endpoints] (in that order).
 
 See the @zmqlink["zmq-socket"]{zmq_socket} documentation for brief
 descriptions of the different @racket[type]s of sockets, and see the
@@ -179,28 +180,36 @@ Lists the options that this library supports for
 }
 
 @deftogether[[
-@defproc[(zmq-connect [s zmq-socket?] [addr string?] ...) void?]
-@defproc[(zmq-bind    [s zmq-socket?] [addr string?] ...) void?]
+@defproc[(zmq-connect [s zmq-socket?] [endpoint string?] ...) void?]
+@defproc[(zmq-bind    [s zmq-socket?] [endpoint string?] ...) void?]
 ]]{
 
-Connect or bind the socket @racket[s] to the given address @racket[addr].
+Connect or bind the socket @racket[s] to the given @racket[endpoint](s).
 
 See the transport documentation pages (@zmqlink["zmq-tcp"]{tcp},
 @zmqlink["zmq-pgm"]{pgm}, @zmqlink["zmq-ipc"]{ipc},
 @zmqlink["zmq-inproc"]{inproc}, @zmqlink["zmq-vmci"]{vmci},
 @zmqlink["zmq-udp"]{udp}) for more information about transports and
-the notation they use for @racket[addr].
+their @racket[endpoint] notations.
+
+If @racket[endpoint] refers to a filesystem path or network address,
+access is checked against @racket[(current-security-guard)]. This
+library cannot parse and check all endpoint formats supported by
+@tt{libzmq}; if @racket[endpoint] is not in a supported format, an
+exception is raised with the message ``invalid endpoint or unsupported
+endpoint format.'' Clients may skip the parsing and access control
+check by using @racket[zmq-unsafe-connect] or
+@racket[zmq-unsafe-bind].
 }
 
 @deftogether[[
-@defproc[(zmq-disconnect [s zmq-socket?] [addr string?] ...) void?]
-@defproc[(zmq-unbind     [s zmq-socket?] [addr string?] ...) void?]
+@defproc[(zmq-disconnect [s zmq-socket?] [endpoint string?] ...) void?]
+@defproc[(zmq-unbind     [s zmq-socket?] [endpoint string?] ...) void?]
 ]]{
 
-Disconnect or unbind the socket @racket[s] from the given address
-@racket[addr].
+Disconnect or unbind the socket @racket[s] from the given @racket[endpoint](s).
 
-Note that in some cases @racket[addr] must be more specific than the
+Note that in some cases @racket[endpoint] must be more specific than the
 argument to @racket[zmq-bind] or @racket[zmq-connect]. For example, see
 the section labeled ``Unbinding wild-card address from a socket'' in
 @zmqlink["zmq-tcp"]{zmq_tcp}.
@@ -247,4 +256,24 @@ raised. (The message is still consumed.)
 
 Receives a message from the socket @racket[s]. The message is
 represented as a list of byte strings, one for each frame.
+}
+
+@section[#:tag "unafe"]{ZeroMQ Unsafe Functions}
+
+The functions provided by this module are @emph{unsafe}.
+
+@defmodule[zeromq/unsafe]
+
+@deftogether[[
+@defproc[(zmq-connect [s zmq-socket?] [endpoint string?] ...) void?]
+@defproc[(zmq-bind    [s zmq-socket?] [endpoint string?] ...) void?]
+]]{
+
+Like @racket[zmq-connect] and @racket[zmq-bind], but do not attempt to
+parse the @racket[endpoint] arguments and perform security guard
+checks.
+
+These functions are unsafe, not in the sense that misuse is likely to
+cause memory corruption, but in the sense that they do not respect the
+security guard mechanism.
 }

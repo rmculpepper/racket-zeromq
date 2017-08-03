@@ -4,7 +4,8 @@
          (except-in ffi/unsafe ->)
          ffi/unsafe/atomic
          ffi/unsafe/custodian
-         "private/ffi.rkt")
+         "private/ffi.rkt"
+         "private/addr.rkt")
 (provide zmq-socket?
          (contract-out
           [zmq-socket
@@ -249,11 +250,15 @@
 ;; ----------------------------------------
 ;; Connect and Bind
 
-(define (zmq-connect sock . addrs) (bind/connect 'zmq-connect sock addrs 'connect))
-(define (zmq-bind sock . addrs) (bind/connect 'zmq-bind sock addrs 'bind))
+(define (zmq-connect sock . addrs) (bind/connect 'zmq-connect sock addrs 'connect #t))
+(define (zmq-bind sock . addrs) (bind/connect 'zmq-bind sock addrs 'bind #t))
 
-(define (bind/connect who sock addrs mode)
-  (when (pair? addrs)
+(define (bind/connect who sock addrs0 mode check?)
+  (when (pair? addrs0)
+    (define addrs
+      (if check?
+          (for/list ([addr (in-list addrs0)]) (check-endp who addr mode))
+          addrs0))
     (call-with-socket-ptr who sock
       (lambda (ptr)
         (for ([addr (in-list addrs)])
@@ -408,3 +413,13 @@
   (define frame (make-bytes size))
   (memcpy frame (zmq_msg_data msg) size)
   frame)
+
+;; ============================================================
+
+;; Don't require this directly; use zeromq/unsafe instead.
+(module* private-unsafe #f
+  (provide (protect-out zmq-unsafe-connect zmq-unsafe-bind) bind-addr/c connect-addr/c)
+  (define (zmq-unsafe-connect sock . addrs)
+    (bind/connect 'zmq-unsafe-connect sock addrs 'connect #f))
+  (define (zmq-unsafe-bind sock . addrs)
+    (bind/connect 'zmq-unsafe-bind sock addrs 'bind #f)))

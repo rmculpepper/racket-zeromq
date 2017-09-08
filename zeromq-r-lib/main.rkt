@@ -92,22 +92,20 @@
 ;; ============================================================
 ;; Socket
 
-;; A Socket is (socket (U _zmq_socket-pointer #f) Sema (Listof Endpoint))
+;; A Socket is (socket Symbol (U _zmq_socket-pointer #f) Semaphore Semaphore (Listof Endpoint))
 ;; A Endpoint is (cons 'bind String) | (cons 'connect String)
-(struct socket ([ptr #:mutable] rsema wsema [ends #:mutable])
+(struct socket (type [ptr #:mutable] rsema wsema [ends #:mutable])
   #:property prop:custom-write
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
    (lambda (s)
      (define (pp:lit s) (unquoted-printing-string s))
-     (define-values (type identity)
+     (define type (socket-type s))
+     (define identity
        (call-as-atomic
         (lambda ()
-          (cond [(socket-ptr s)
-                 => (lambda (ptr)
-                      (values (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type)
-                              (zmq_getsockopt/bytes ptr 'identity)))]
-                [else (values 'closed #f)]))))
+          (cond [(socket-ptr s) => (lambda (ptr) (zmq_getsockopt/bytes ptr 'identity))]
+                [else #f]))))
      (define binds (ends-get (socket-ends s) 'bind))
      (define connects (ends-get (socket-ends s) 'connect))
      (append (list type)
@@ -135,7 +133,7 @@
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define sock (socket ptr (make-semaphore 1) (make-semaphore 1) null))
+  (define sock (socket type ptr (make-semaphore 1) (make-semaphore 1) null))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)

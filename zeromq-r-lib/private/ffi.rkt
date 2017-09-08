@@ -276,17 +276,18 @@
 ;; Messages
 
 (define-zmq zmq_msg_close
-  (_fun* _zmq_msg-pointer -> _int)
-  #:wrap (deallocator))
+  (_fun* _zmq_msg-pointer -> _int))
 
 (define-zmq zmq_msg_init
-  (_fun (m : _zmq_msg-pointer) -> _int -> m)
-  #:wrap (allocator zmq_msg_close))
+  (_fun (m : _zmq_msg-pointer) -> _int -> m))
+
+(define-zmq zmq_msg_init_size
+  (_fun (m : _zmq_msg-pointer) _size -> _int))
 
 (define (new-zmq_msg)
-  (define msg (cast (malloc ZMQ-MSG-SIZE 'atomic-interior) _pointer _zmq_msg-pointer))
-  (zmq_msg_init msg)
-  msg)
+  (define p (malloc ZMQ-MSG-SIZE 'atomic-interior))
+  (cpointer-push-tag! p zmq_msg-pointer-tag)
+  p)
 
 (define-zmq zmq_msg_data
   (_fun _zmq_msg-pointer -> _pointer))

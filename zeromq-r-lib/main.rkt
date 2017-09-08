@@ -8,6 +8,7 @@
          "private/ffi.rkt"
          "private/addr.rkt")
 (provide zmq-socket?
+         routing-id?
          (contract-out
           [zmq-socket
            (->* [socket-type/c]
@@ -57,6 +58,13 @@
 (define connect-addr/c string?)
 (define subscription/c (or/c bytes? string?))
 (define msg-frame/c (or/c bytes? string?))
+
+;; A RoutingId is (routing-id Nat)
+(struct routing-id (n)
+  #:property prop:custom-write
+  (make-constructor-style-printer
+   (lambda (self) 'routing-id)
+   (lambda (self) (list (routing-id-n self)))))
 
 ;; TODO:
 ;; - better integration with evt system

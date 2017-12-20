@@ -91,10 +91,9 @@
 ;; ============================================================
 ;; Socket
 
-;; A Socket is (socket (U _zmq_socket-pointer #f (Listof Endpoint)) _zmq_msg-pointer Sema)
-;; The zmq_msg is kept uninitialized/closed except during zmq-recv.
+;; A Socket is (socket (U _zmq_socket-pointer #f) Sema (Listof Endpoint))
 ;; A Endpoint is (cons 'bind String) | (cons 'connect String)
-(struct socket ([ptr #:mutable] msg sema [ends #:mutable])
+(struct socket ([ptr #:mutable] sema [ends #:mutable])
   #:property prop:custom-write
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
@@ -134,8 +133,7 @@
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define msg (new-zmq_msg))
-  (define sock (socket ptr msg (make-semaphore 1) null))
+  (define sock (socket ptr (make-semaphore 1) null))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -381,33 +379,34 @@
 
 (define (zmq-recv* sock #:who [who 'zmq-recv*])
   (call-with-semaphore (socket-sema sock)
-    (lambda ()
-      (define msg (socket-msg sock))
-      (dynamic-wind
-        (lambda () (zmq_msg_init msg))
-        (lambda () (recv-frames who sock msg null))
-        (lambda () (zmq_msg_close msg))))))
+    (lambda () (recv-frames who sock null))))
 
-(define (recv-frames who sock msg rframes)
+(define (recv-frames who sock rframes)
   ((call-with-socket-ptr who sock #:sema? #f
-     (lambda (ptr) (-recv-frames-k who sock ptr msg rframes)))))
+     (lambda (ptr) (-recv-frames-k who sock ptr rframes)))))
 
-(define (-recv-frames-k who sock ptr msg rframes)
+(define (-recv-frames-k who sock ptr rframes)
+  (define msg (new-zmq_msg))
+  (zmq_msg_init msg)
   (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
   (cond [(>= s 0)
          (define frame (-get-msg-frame msg))
          (define more? (zmq_msg_more msg))
-         (cond [(zmq_msg_more msg)
-                (-recv-frames-k who sock ptr msg (cons frame rframes))]
+         (zmq_msg_close msg)
+         (cond [more?
+                (-recv-frames-k who sock ptr (cons frame rframes))]
                [else (lambda () (reverse (cons frame rframes)))])]
         [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
+         (zmq_msg_close msg)
          (lambda ()
            (wait who sock ZMQ_POLLIN)
-           (recv-frames who sock msg rframes))]
+           (recv-frames who sock rframes))]
         [else
+         (zmq_msg_close msg)
          (lambda ()
            (error who "error receiving message~a~a"
-                  (let ([ct (length rframes)]) (if (zero? ct) "" (format "\n  frame: ~s" (add1 ct))))
+                  (let ([ct (length rframes)])
+                    (if (zero? ct) "" (format "\n  frame: ~s" (add1 ct))))
                   (errno-lines)))]))
 
 (define (-get-msg-frame msg)

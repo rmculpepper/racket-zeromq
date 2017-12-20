@@ -165,7 +165,10 @@
         (unless (zero? s)
           (log-zmq-error "error closing socket~a" (errno-lines)))))))
 
-(define (wait-fd-is-socket?) (eq? (system-type) 'windows))
+(define (wait-fd-is-socket?)
+  (case (system-type)
+    [(windows macosx) #t]
+    [else #f]))
 
 (define (zmq-closed? sock)
   (call-as-atomic (lambda () (and (socket-ptr sock) #t))))
@@ -360,7 +363,7 @@
          (end-atomic)]
         [else
          (define fd (zmq_getsockopt/int ptr 'fd))
-         (define fdsema (scheme_fd_to_semaphore fd MZFD_CREATE_READ #f))
+         (define fdsema (scheme_fd_to_semaphore fd MZFD_CREATE_READ (wait-fd-is-socket?)))
          (end-atomic)
          (log-zmq-debug "waiting (~s); about to sync on fd semaphore, fd = ~s" who fd)
          (sync fdsema)

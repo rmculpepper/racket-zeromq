@@ -4,6 +4,7 @@
          (except-in ffi/unsafe ->)
          ffi/unsafe/atomic
          ffi/unsafe/custodian
+         ffi/unsafe/port
          "private/ffi.rkt"
          "private/addr.rkt")
 (provide zmq-socket?
@@ -158,15 +159,15 @@
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
       (define fd (zmq_getsockopt/int ptr 'fd))
-      (scheme_fd_to_semaphore fd MZFD_REMOVE (wait-fd-is-socket?))
+      (file-descriptor->semaphore fd 'remove)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
           (log-zmq-error "error closing socket~a" (errno-lines)))))))
 
-(define (wait-fd-is-socket?)
-  (case (system-type)
-    [(windows macosx) #t]
-    [else #f]))
+(define (file-descriptor->semaphore fd mode)
+  ;; The fd *must* be interpreted as a socket on Windows and Mac OS.
+  ;; On Linux it does not seem to matter.
+  (unsafe-socket->semaphore fd mode))
 
 (define (zmq-closed? sock)
   (call-as-atomic (lambda () (and (socket-ptr sock) #t))))
@@ -361,9 +362,9 @@
          (end-atomic)]
         [else
          (define fd (zmq_getsockopt/int ptr 'fd))
-         (define fdsema (scheme_fd_to_semaphore fd MZFD_CREATE_READ (wait-fd-is-socket?)))
+         (define fdsema (file-descriptor->semaphore fd 'read))
          (end-atomic)
-         (log-zmq-debug "waiting (~s); about to sync on fd semaphore, fd = ~s" who fd)
+         (log-zmq-debug "~s wait; fd = ~s, socket = ~e" who fd sock)
          (sync fdsema)
          (wait who sock event)]))
 

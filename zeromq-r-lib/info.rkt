@@ -5,7 +5,7 @@
 
 (define collection "zeromq")
 (define deps
-  '(["base" #:version "6.10"]))
+  '(["base" #:version "6.12"]))
 
 ;; ========================================
 ;; collect info

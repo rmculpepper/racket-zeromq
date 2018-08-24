@@ -12,18 +12,6 @@
 (define EINVAL 22) ;; FIXME
 
 ;; ========================================
-;; Racket constants and functions
-
-(define MZFD_CREATE_READ 1)
-(define MZFD_CREATE_WRITE 2)
-(define MZFD_REMOVE 5)
-
-(define-ffi-definer define-racket #f)
-
-(define-racket scheme_fd_to_semaphore
-  (_fun _intptr _int _bool -> _racket))
-
-;; ========================================
 ;; ZeroMQ constants and functions
 
 (define-ffi-definer define-zmq

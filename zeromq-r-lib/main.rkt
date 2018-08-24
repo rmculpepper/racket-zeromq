@@ -99,6 +99,7 @@
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
    (lambda (s)
+     (define (pp:lit s) (unquoted-printing-string s))
      (define-values (type identity)
        (call-as-atomic
         (lambda ()
@@ -113,9 +114,6 @@
              (if (and identity (not (equal? identity #""))) (list (pp:lit "#:identity") identity) '())
              (if (pair? binds) (list (pp:lit "#:bind") binds) '())
              (if (pair? connects) (list (pp:lit "#:connect") connects) '())))))
-
-(struct pp:lit (str)
-  #:property prop:custom-write (lambda (self out mode) (write-string (pp:lit-str self) out)))
 
 (define (zmq-socket? v) (socket? v))
 

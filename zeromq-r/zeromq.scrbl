@@ -2,7 +2,7 @@
 @(require scribble/manual
           scribble/basic
           scribble/example
-          (for-label racket racket/contract racket/format setup/dirs zeromq))
+          (for-label racket racket/contract racket/format setup/dirs zeromq zeromq/unsafe))
 
 @title{ZeroMQ: Distributed Messaging}
 @author[@author+email["Ryan Culpepper" "ryanc@racket-lang.org"]]
@@ -265,8 +265,8 @@ The functions provided by this module are @emph{unsafe}.
 @defmodule[zeromq/unsafe]
 
 @deftogether[[
-@defproc[(zmq-connect [s zmq-socket?] [endpoint string?] ...) void?]
-@defproc[(zmq-bind    [s zmq-socket?] [endpoint string?] ...) void?]
+@defproc[(zmq-unsafe-connect [s zmq-socket?] [endpoint string?] ...) void?]
+@defproc[(zmq-unsafe-bind    [s zmq-socket?] [endpoint string?] ...) void?]
 ]]{
 
 Like @racket[zmq-connect] and @racket[zmq-bind], but do not attempt to

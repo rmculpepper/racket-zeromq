@@ -2,7 +2,7 @@
 @(require scribble/manual
           scribble/basic
           scribble/example
-          (for-label racket racket/contract racket/format zeromq))
+          (for-label racket racket/contract racket/format setup/dirs zeromq))
 
 @title{ZeroMQ: Distributed Messaging}
 @author[@author+email["Ryan Culpepper" "ryanc@racket-lang.org"]]
@@ -277,3 +277,25 @@ These functions are unsafe, not in the sense that misuse is likely to
 cause memory corruption, but in the sense that they do not respect the
 security guard mechanism.
 }
+
+@; ----------------------------------------
+@section[#:tag "deps"]{ZeroMQ Requirements}
+
+This library requires the @tt{libzmq} foreign library to be installed
+in either the operating system's default library search path or in
+Racket's extended library search path (see @racket[get-lib-search-dirs]).
+
+On Linux, @tt{libzmq.so.5} is required. On Debian-based systems, it is
+available from the @tt{libzmq5} package. On RedHat-based systems, it
+is available from the @tt{zeromq} package.
+
+On Mac OS, @tt{libzmq.5.dylib} is required.
+@itemlist[
+@item{With Homebrew: Run @tt{brew install zeromq}. The library will be
+installed in @tt{/usr/local/lib}, which is in the operating system's
+default search path.}
+@item{With MacPorts: Install the @tt{zmq} port. The library will be
+instaled in @tt{/opt/local/lib}, which is @emph{not} in the operating
+system's default search path. Manually copy or link the library into
+one of the directories returned by @racket[(get-lib-search-dirs)].}
+]

@@ -3,7 +3,8 @@
          ffi/unsafe/atomic
          ffi/unsafe/alloc
          ffi/unsafe/define)
-(provide (protect-out (all-defined-out)))
+(provide (protect-out (except-out (all-defined-out) zmq-load-fail-reason))
+         zmq-load-fail-reason)
 
 (define RETRY-COUNT 5)
 
@@ -14,8 +15,16 @@
 ;; ========================================
 ;; ZeroMQ constants and functions
 
-(define-ffi-definer define-zmq
-  (ffi-lib "libzmq" '(#f "5") #:fail (lambda () #f)) ;; FIXME: support v4?
+(define zmq-load-fail-reason #f)
+
+(define zmq-lib
+  (with-handlers ([exn:fail?
+                   (lambda (x)
+                     (set! zmq-load-fail-reason (exn-message x))
+                     #f)])
+    (ffi-lib "libzmq" '(#f "5"))))
+
+(define-ffi-definer define-zmq zmq-lib
   #:default-make-fail make-not-available)
 
 (define-syntax-rule (_fun* part ...) (_fun #:save-errno 'posix part ...))

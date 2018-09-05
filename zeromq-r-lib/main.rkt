@@ -126,6 +126,9 @@
                     #:bind [bind-addrs null]
                     #:connect [connect-addrs null]
                     #:subscribe [subscriptions null])
+  (unless zmq-lib
+    (error 'zmq-socket "could not find libzmq library\n  error: ~s"
+           zmq-load-fail-reason))
   (start-atomic)
   (define ctx (-get-ctx))
   (define ptr (zmq_socket ctx type))

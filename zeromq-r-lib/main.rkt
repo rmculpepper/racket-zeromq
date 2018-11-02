@@ -160,15 +160,15 @@
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
       (define fd (zmq_getsockopt/int ptr 'fd))
-      (file-descriptor->semaphore fd 'remove)
+      (fd->evt fd 'remove)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
           (log-zmq-error "error closing socket~a" (errno-lines)))))))
 
-(define (file-descriptor->semaphore fd mode)
+(define (fd->evt fd mode)
   ;; The fd *must* be interpreted as a socket on Windows and Mac OS.
   ;; On Linux it does not seem to matter.
-  (unsafe-socket->semaphore fd mode))
+  (unsafe-fd->evt fd mode #t))
 
 (define (zmq-closed? sock)
   (call-as-atomic (lambda () (and (socket-ptr sock) #t))))
@@ -363,7 +363,7 @@
          (end-atomic)]
         [else
          (define fd (zmq_getsockopt/int ptr 'fd))
-         (define fdsema (file-descriptor->semaphore fd 'read))
+         (define fdsema (fd->evt fd 'read))
          (end-atomic)
          (log-zmq-debug "~s wait; fd = ~s, socket = ~e" who fd sock)
          (sync fdsema)

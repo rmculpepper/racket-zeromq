@@ -94,7 +94,7 @@
 
 ;; A Socket is (socket (U _zmq_socket-pointer #f) Sema (Listof Endpoint))
 ;; A Endpoint is (cons 'bind String) | (cons 'connect String)
-(struct socket ([ptr #:mutable] sema [ends #:mutable])
+(struct socket ([ptr #:mutable] rsema wsema [ends #:mutable])
   #:property prop:custom-write
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
@@ -135,7 +135,7 @@
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define sock (socket ptr (make-semaphore 1) null))
+  (define sock (socket ptr (make-semaphore 1) (make-semaphore 1) null))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -182,15 +182,12 @@
 ;; ----------------------------------------
 ;; Helpers
 
-(define (call-with-socket-ptr who sock proc #:sema? [sema? #t])
-  (define (inner)
-    (call-as-atomic
-     (lambda ()
-       (define ptr (socket-ptr sock))
-       (unless ptr (error who "socket is closed"))
-       (proc ptr))))
-  (cond [sema? (call-with-semaphore (socket-sema sock) inner)]
-        [else (inner)]))
+(define (call-with-socket-ptr who sock proc)
+  (call-as-atomic
+   (lambda ()
+     (define ptr (socket-ptr sock))
+     (unless ptr (error who "socket is closed"))
+     (proc ptr))))
 
 (define (errno-lines)
   (format "\n  errno: ~s\n  error: ~.a" (saved-errno) (zmq_strerror (saved-errno))))
@@ -329,11 +326,11 @@
 
 (define (zmq-send* sock parts #:who [who 'zmq-send*])
   (define frames (map coerce->bytes parts))
-  (call-with-semaphore (socket-sema sock)
+  (call-with-semaphore (socket-wsema sock)
     (lambda () (send-frames who sock 0 frames))))
 
 (define (send-frames who sock n frames)
-  ((call-with-socket-ptr who sock #:sema? #f
+  ((call-with-socket-ptr who sock
      (lambda (ptr) (-send-frames-k who sock ptr n frames)))))
 
 (define (-send-frames-k who sock ptr n frames)
@@ -380,11 +377,11 @@
   (bytes->string/utf-8 msg))
 
 (define (zmq-recv* sock #:who [who 'zmq-recv*])
-  (call-with-semaphore (socket-sema sock)
+  (call-with-semaphore (socket-rsema sock)
     (lambda () (recv-frames who sock null))))
 
 (define (recv-frames who sock rframes)
-  ((call-with-socket-ptr who sock #:sema? #f
+  ((call-with-socket-ptr who sock
      (lambda (ptr) (-recv-frames-k who sock ptr rframes)))))
 
 (define (-recv-frames-k who sock ptr rframes)

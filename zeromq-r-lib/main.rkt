@@ -324,7 +324,9 @@
 (struct zmq-message (frames meta))
 
 ;; FIXME: contracts, disallow direct access to meta
-(provide (struct-out zmq-message))
+(provide (struct-out zmq-message)
+         zmq-recv-message
+         zmq-send-message)
 
 ;; ----------------------------------------
 ;; Send

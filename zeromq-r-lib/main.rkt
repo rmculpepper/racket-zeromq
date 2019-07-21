@@ -7,6 +7,7 @@
          ffi/unsafe/port
          ffi/unsafe/schedule
          "private/ffi.rkt"
+         "private/mutex.rkt"
          "private/addr.rkt")
 (provide zmq-socket?
          (contract-out
@@ -91,7 +92,7 @@
 (struct socket
   (type                 ;; Symbol (_zmq_socket_type)
    [ptr #:mutable]      ;; _zmq_socket-pointer or #f -- #f means closed
-   wsema                ;; Semaphore -- protects sends
+   wmutex               ;; Mutex -- protects sends
    [ends #:mutable]     ;; (Listof Endpoint), where Endpoint = (cons (U 'bind 'connect) String)
    )
   ;; Like a channel, a zmq-socket acts as an evt. It is ready for sync when a
@@ -137,7 +138,7 @@
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define sock (socket type ptr (make-semaphore 1) null))
+  (define sock (socket type ptr (make-mutex) null))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -325,22 +326,18 @@
 
 ;; A MsgPart is (U String Bytes)
 
-;; FIXME: if thread is interrupted (break/kill) while sending a
-;; message with multiple frames, a subsequent send will get confused
-;; as more frames in first message.
-
 ;; zmq-send : Socket MsgPart ... -> Void
 (define (zmq-send sock part1 . parts)
   (zmq-send* sock (cons part1 parts) #:who 'zmq-send))
 
 (define (zmq-send* sock parts #:who [who 'zmq-send*])
   (define frames (map coerce->bytes parts))
-  (call-with-semaphore (socket-wsema sock)
-    (lambda () (send-frames who sock 0 frames #f))))
+  (zmq-send-message sock (zmq-message frames #f) #:who who))
 
 (define (zmq-send-message sock m #:who [who 'zmq-send-message])
-  (call-with-semaphore (socket-wsema sock)
-    (lambda () (send-frames who sock 0 (zmq-message-frames m) (zmq-message-meta m)))))
+  (call-with-mutex (socket-wmutex sock)
+    (lambda () (send-frames who sock 0 (zmq-message-frames m) (zmq-message-meta m)))
+    #:on-dead (lambda () (error who "socket is permanently locked for writes\n  socket: ~e" sock))))
 
 (define (send-frames who sock n frames meta)
   ((call-with-socket-ptr who sock

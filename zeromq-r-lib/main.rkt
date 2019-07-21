@@ -5,6 +5,7 @@
          ffi/unsafe/atomic
          ffi/unsafe/custodian
          ffi/unsafe/port
+         ffi/unsafe/schedule
          "private/ffi.rkt"
          "private/addr.rkt")
 (provide zmq-socket?
@@ -61,7 +62,6 @@
 ;; TODO:
 ;; - better integration with evt system
 ;;   - add timeout/evt to recv?
-;;   - add maybe-recv-evt?
 
 ;; Convention: procedures starting with "-" must be called in atomic mode.
 
@@ -94,7 +94,12 @@
 
 ;; A Socket is (socket (U _zmq_socket-pointer #f) Sema (Listof Endpoint))
 ;; A Endpoint is (cons 'bind String) | (cons 'connect String)
-(struct socket ([ptr #:mutable] rsema wsema [ends #:mutable])
+(struct socket ([ptr #:mutable] wsema [ends #:mutable])
+  ;; Like a channel, a zmq-socket acts as an evt. It is ready for sync when a
+  ;; message can be read, and sync *reads and returns* the message itself.
+  #:property prop:evt
+  (lambda (self)
+    (wrap-evt (recv-evt self) (lambda (r) (if (procedure? r) (r 'zmq-socket:evt) r))))
   #:property prop:custom-write
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
@@ -135,7 +140,7 @@
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define sock (socket ptr (make-semaphore 1) (make-semaphore 1) null))
+  (define sock (socket ptr (make-semaphore 1) null))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -189,8 +194,8 @@
      (unless ptr (error who "socket is closed"))
      (proc ptr))))
 
-(define (errno-lines)
-  (format "\n  errno: ~s\n  error: ~.a" (saved-errno) (zmq_strerror (saved-errno))))
+(define (errno-lines [errno (saved-errno)])
+  (format "\n  errno: ~s\n  error: ~.a" errno (zmq_strerror errno)))
 
 (define (coerce->list x) (if (list? x) x (list x)))
 (define (coerce->bytes x) (if (string? x) (string->bytes/utf-8 x) x))
@@ -312,13 +317,24 @@
               (error who "~a error~a" mode (errno-lines)))))))))
 
 ;; ----------------------------------------
-;; Send and Recv
+;; Messages
+
+;; A Message is (zmq-message (Listof Bytes) ???)
+;; A zmq-message struct represents a whole (possibly multi-frame) message along
+;; with metadata such as routing-id and group for draft sockets (FIXME).
+(struct zmq-message (frames meta))
+
+;; FIXME: contracts, disallow direct access to meta
+(provide (struct-out zmq-message))
+
+;; ----------------------------------------
+;; Send
 
 ;; A MsgPart is (U String Bytes)
 
 ;; FIXME: if thread is interrupted (break/kill) while sending a
 ;; message with multiple frames, a subsequent send will get confused
-;; as more frames in first message. (Likewise for read.)
+;; as more frames in first message.
 
 ;; zmq-send : Socket MsgPart ... -> Void
 (define (zmq-send sock part1 . parts)
@@ -327,27 +343,39 @@
 (define (zmq-send* sock parts #:who [who 'zmq-send*])
   (define frames (map coerce->bytes parts))
   (call-with-semaphore (socket-wsema sock)
-    (lambda () (send-frames who sock 0 frames))))
+    (lambda () (send-frames who sock 0 frames #f))))
 
-(define (send-frames who sock n frames)
+(define (zmq-send-message sock m #:who [who 'zmq-send-message])
+  (call-with-semaphore (socket-wsema sock)
+    (lambda () (send-frames who sock 0 (zmq-message-frames m) (zmq-message-meta m)))))
+
+(define (send-frames who sock n frames meta)
   ((call-with-socket-ptr who sock
-     (lambda (ptr) (-send-frames-k who sock ptr n frames)))))
+     (lambda (ptr) (-send-frames-k who sock ptr n frames meta)))))
 
-(define (-send-frames-k who sock ptr n frames)
-  (define last? (null? (cdr frames)))
-  (define s (zmq_send ptr (car frames) (if last? '(ZMQ_DONTWAIT) '(ZMQ_DONTWAIT ZMQ_SNDMORE))))
-  (cond [(>= s 0)
-         (if (pair? (cdr frames))
-             (-send-frames-k who sock ptr (add1 n) (cdr frames))
-             (lambda () (void)))]
-        [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
-         (lambda ()
-           (wait who sock ZMQ_POLLOUT)
-           (send-frames who sock n frames))]
-        [else
-         (lambda ()
-           (error who "error sending message\n  frame: ~s of ~s~a"
-                  (add1 n) (+ n (length frames)) (errno-lines)))]))
+(define (-send-frames-k who sock ptr n frames meta)
+  (define msg (new-zmq_msg))
+  (let -loop ([n n] [frames frames]) ;; PRE: msg is uninitialized
+    (define last? (null? (cdr frames)))
+    (-init-send-msg msg (car frames) meta)
+    (define s (zmq_msg_send msg ptr (if last? '(ZMQ_DONTWAIT) '(ZMQ_DONTWAIT ZMQ_SNDMORE))))
+    (cond [(>= s 0) ;; successful send uninitializes msg
+           (if (pair? (cdr frames))
+               (-loop (add1 n) (cdr frames))
+               (lambda () (void)))]
+          [(= (saved-errno) EINTR)
+           (zmq_msg_close msg)
+           (-loop n frames)]
+          [(= (saved-errno) EAGAIN)
+           (zmq_msg_close msg)
+           (lambda ()
+             (wait who sock ZMQ_POLLOUT)
+             (-loop n frames))]
+          [else
+           (zmq_msg_close msg)
+           (lambda ()
+             (error who "error sending message\n  frame: ~s of ~s~a"
+                    (add1 n) (+ n (length frames)) (errno-lines)))])))
 
 (define (wait who sock event)
   (start-atomic)
@@ -366,6 +394,16 @@
          (sync fdsema)
          (wait who sock event)]))
 
+(define (-init-send-msg msg frame meta)
+  ;; PRE: msg is uninitialized
+  (zmq_msg_init_size msg (bytes-length frame))
+  (memcpy (zmq_msg_data msg) frame (bytes-length frame))
+  ;; FIXME: routing-id, group, etc
+  (void))
+
+;; ----------------------------------------
+;; Recv
+
 (define (zmq-recv sock #:who [who 'zmq-recv])
   (define frames (zmq-recv* sock #:who who))
   (cond [(and (pair? frames) (null? (cdr frames)))
@@ -377,42 +415,77 @@
   (bytes->string/utf-8 msg))
 
 (define (zmq-recv* sock #:who [who 'zmq-recv*])
-  (call-with-semaphore (socket-rsema sock)
-    (lambda () (recv-frames who sock null))))
+  (zmq-message-frames (zmq-recv-message sock #:who who)))
 
-(define (recv-frames who sock rframes)
-  ((call-with-socket-ptr who sock
-     (lambda (ptr) (-recv-frames-k who sock ptr rframes)))))
+(define (zmq-recv-message sock #:who [who 'zmq-recv-message])
+  (define r
+    (or (call-with-socket-ptr who sock (lambda (ptr) (-try-recv sock ptr)))
+        (sync (recv-evt sock))))
+  (if (procedure? r) (r who) r))
 
-(define (-recv-frames-k who sock ptr rframes)
+;; recv-evt is an internal helper evt whose sync result is either a zmq-message
+;; or a procedure to be called to report an error.
+(struct recv-evt (sock)
+  #:property prop:evt
+  (unsafe-poller
+   (lambda (self wakeups)
+     (define sock (recv-evt-sock self))
+     (define ptr (socket-ptr sock))
+     (cond [(not ptr)
+            (values (list (lambda (who) (error who "socket is closed\n  socket: ~e" sock))) #f)]
+           [(positive? (bitwise-and (zmq_getsockopt/int ptr 'events) ZMQ_POLLIN))
+            (cond [wakeups
+                   ;; wakeups => can't commit read, so just cancel sleep
+                   (values '(ask-me-again) #f)]
+                  [(-try-recv sock ptr)
+                   => (lambda (r) (values (list r) #f))]
+                  [else (values #f self)])]
+           [else
+            (when wakeups
+              (unsafe-poll-ctx-fd-wakeup wakeups (zmq_getsockopt/int ptr 'fd) 'read))
+            (values #f self)]))))
+
+;; -try-recv : Socket _socket-pointer -> (U #f Message (Symbol -> (error)))
+(define (-try-recv sock ptr)
   (define msg (new-zmq_msg))
   (zmq_msg_init msg)
-  (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
-  (cond [(>= s 0)
-         (define frame (-get-msg-frame msg))
-         (define more? (zmq_msg_more msg))
-         (zmq_msg_close msg)
-         (cond [more?
-                (-recv-frames-k who sock ptr (cons frame rframes))]
-               [else (lambda () (reverse (cons frame rframes)))])]
-        [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
-         (zmq_msg_close msg)
-         (lambda ()
-           (wait who sock ZMQ_POLLIN)
-           (recv-frames who sock rframes))]
-        [else
-         (zmq_msg_close msg)
-         (lambda ()
-           (error who "error receiving message~a~a"
-                  (let ([ct (length rframes)])
-                    (if (zero? ct) "" (format "\n  frame: ~s" (add1 ct))))
-                  (errno-lines)))]))
+  (define (-loop1)
+    (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
+    (cond [(>= s 0)
+           (define meta (-get-msg-meta msg))
+           (-get-frames 1 meta null)]
+          [(= (saved-errno) EINTR) (-loop1)]
+          [(= (saved-errno) EAGAIN) #f]
+          [else (make-recv-error sock 1 (saved-errno))]))
+  (define (-get-frames n meta rframes)
+    (let ([rframes (cons (-get-msg-frame msg) rframes)])
+      (cond [(zmq_msg_more msg)
+             (-get-more-frames (add1 n) meta rframes)]
+            [else (zmq-message (reverse rframes) meta)])))
+  (define (-get-more-frames n meta rframes)
+    (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
+    (cond [(>= s 0) (-get-frames n meta rframes)]
+          [(= (saved-errno) EINTR) (-get-more-frames n meta rframes)]
+          [(= (saved-errno) EAGAIN) ;; this is not supposed to be possible
+           (lambda (who)
+             (error who "internal error: got EAGAIN on frame ~s\n  socket: ~e" sock))]
+          [else (make-recv-error sock n (saved-errno))]))
+  (begin0 (-loop1)
+    (zmq_msg_close msg)))
+
+(define ((make-recv-error sock n errno) who)
+  (error who "error receiving frame\n  socket: ~e\n  frame: ~s~a"
+         sock n (errno-lines errno)))
 
 (define (-get-msg-frame msg)
   (define size (zmq_msg_size msg))
   (define frame (make-bytes size))
   (memcpy frame (zmq_msg_data msg) size)
   frame)
+
+(define (-get-msg-meta msg)
+  ;; FIXME: routing-id, group, etc
+  '#hasheq())
 
 ;; ============================================================
 

@@ -7,6 +7,7 @@
          ffi/unsafe/port
          ffi/unsafe/schedule
          "private/ffi.rkt"
+         "private/mutex.rkt"
          "private/addr.rkt")
 (provide zmq-socket?
          (contract-out
@@ -92,9 +93,9 @@
 ;; ============================================================
 ;; Socket
 
-;; A Socket is (socket Symbol (U _zmq_socket-pointer #f) Semaphore (Listof Endpoint))
+;; A Socket is (socket Symbol (U _zmq_socket-pointer #f) Mutex (Listof Endpoint))
 ;; A Endpoint is (cons 'bind String) | (cons 'connect String)
-(struct socket (type [ptr #:mutable] wsema [ends #:mutable])
+(struct socket (type [ptr #:mutable] wmutex [ends #:mutable])
   ;; Like a channel, a zmq-socket acts as an evt. It is ready for sync when a
   ;; message can be read, and sync *reads and returns* the message itself.
   #:property prop:evt
@@ -138,7 +139,7 @@
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define sock (socket type ptr (make-semaphore 1) null))
+  (define sock (socket type ptr (make-mutex) null))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -340,12 +341,12 @@
 
 (define (zmq-send* sock parts #:who [who 'zmq-send*])
   (define frames (map coerce->bytes parts))
-  (call-with-semaphore (socket-wsema sock)
-    (lambda () (send-frames who sock 0 frames #f))))
+  (zmq-send-message sock (zmq-message frames #f) #:who who))
 
 (define (zmq-send-message sock m #:who [who 'zmq-send-message])
-  (call-with-semaphore (socket-wsema sock)
-    (lambda () (send-frames who sock 0 (zmq-message-frames m) (zmq-message-meta m)))))
+  (call-with-mutex (socket-wmutex sock)
+    (lambda () (send-frames who sock 0 (zmq-message-frames m) (zmq-message-meta m)))
+    #:on-dead (lambda () (error who "socket is permanently locked for writes\n  socket: ~e" sock))))
 
 (define (send-frames who sock n frames meta)
   ((call-with-socket-ptr who sock

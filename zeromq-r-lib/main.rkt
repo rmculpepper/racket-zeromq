@@ -97,26 +97,34 @@
 ;; There is one implicit context created on demand, only finalized
 ;; when the namespace goes away.
 
-(define the-ctx #f)
+(define the-ctx-and-poller #f)
 
-;; -get-ctx : -> Context
-(define (-get-ctx)
-  (unless the-ctx
+(define (-init)
+  (unless the-ctx-and-poller
     (log-zmq-debug "creating zmq_ctx")
     (define ctx (zmq_ctx_new))
+    (log-zmq-debug "creating zmq_poller")
+    (define poller (zmq_poller_new))
     (register-finalizer ctx
-      (lambda (ctx)
-        (log-zmq-debug "destroying zmq_ctx")
-        (zmq_ctx_destroy ctx)))
-    (set! the-ctx ctx))
-  the-ctx)
+                        (lambda (ctx)
+                          (log-zmq-debug "destroying zmq_ctx")
+                          (zmq_ctx_destroy ctx)))
+    (register-finalizer poller
+                        (lambda (poller)
+                          (log-zmq-debug "destroying zmq_poller")
+                          (zmq_poller_destroy poller)))
+    (set! the-ctx-and-poller (cons ctx poller))))
+
+;; -get-ctx : -> Context
+(define (-get-ctx) (-init) (car the-ctx-and-poller))
+(define (-get-poller) (-init) (cdr the-ctx-and-poller))
 
 ;; ============================================================
 ;; Socket
 
-;; A Socket is (socket Symbol (U _zmq_socket-pointer #f) Sema Sema (Listof Endpoint) (U _zmq_poller-pointer #f))
+;; A Socket is (socket Symbol (U _zmq_socket-pointer #f) Sema Sema (Listof Endpoint) Any)
 ;; A Endpoint is (cons 'bind String) | (cons 'connect String)
-(struct socket (type [ptr #:mutable] rsema wsema [ends #:mutable] [poller #:mutable])
+(struct socket (type [ptr #:mutable] rsema wsema [ends #:mutable] [remember #:mutable])
   #:property prop:custom-write
   (make-constructor-style-printer
    (lambda (s) 'zmq-socket)
@@ -155,15 +163,16 @@
            ";\n libzmq must be version >= 4.3.2 and compiled with DRAFT API enabled"
            type (zmq-version-string)))
   (start-atomic)
-  (define ctx (-get-ctx))
-  (define ptr (zmq_socket ctx type))
+  (define ptr (zmq_socket (-get-ctx) type))
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define sock (socket type ptr (make-semaphore 1) (make-semaphore 1) null #f))
+  (define sock (socket type ptr (make-semaphore 1) (make-semaphore 1) null the-ctx-and-poller))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
+  (when (socket-type-threadsafe? type)
+    (zmq_poller_add (-get-poller) ptr 0))
   ;; Set options, etc.
   (zmq-set-option sock 'linger DEFAULT-LINGER)
   (when identity (zmq-set-option sock 'identity identity))
@@ -184,13 +193,14 @@
                      (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type))
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
-      (let ([poller (socket-poller sock)])
-        (when poller (zmq_poller_destroy poller)))
+      (when (socket-type-threadsafe? (socket-type sock))
+        (zmq_poller_remove (-get-poller) ptr))
       (let ([fd (zmq_getsockopt/int ptr 'fd)])
         (when fd (fd->evt fd 'remove)))
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
-          (log-zmq-error "error closing socket~a" (errno-lines)))))))
+          (log-zmq-error "error closing socket~a" (errno-lines))))
+      (set-socket-remember! sock #f))))
 
 (define (fd->evt fd mode)
   ;; The fd *must* be interpreted as a socket on Windows and Mac OS.
@@ -400,21 +410,7 @@
          (end-atomic)]
         [(socket-type-threadsafe? (socket-type sock))
          ;; Threadsafe sockets do not support ZMQ_FD, must use zmq_poller.
-         (cond [(socket-poller sock)
-                => (lambda (poller)
-                     (define fd (zmq_poller_fd poller))
-                     (define fdsema (fd->evt fd 'read))
-                     (end-atomic)
-                     (log-zmq-debug "~s wait (poller); fd = ~s, socket = ~e" who fd sock)
-                     (sync fdsema)
-                     (wait who sock event))]
-               [else
-                ;; Read ZMQ_EVENTS one more time after attaching poller... (FIXME, necessary?!)
-                (define poller (zmq_poller_new))
-                (set-socket-poller! sock poller)
-                (zmq_poller_add poller ptr (+ ZMQ_POLLIN ZMQ_POLLOUT)) ;; FIXME?
-                (end-atomic)
-                (wait who sock event)])]
+         (-wait/poller who sock event ptr (-get-poller))]
         [else
          ;; Non-threadsafe sockets support ZMQ_FD.
          (define fd (zmq_getsockopt/int ptr 'fd))
@@ -423,6 +419,24 @@
          (log-zmq-debug "~s wait; fd = ~s, socket = ~e" who fd sock)
          (sync fdsema)
          (wait who sock event)]))
+
+(define (-wait/poller who sock event ptr poller)
+  ;; Check ZMQ_EVENTS once more after enabling the poller, and disable when done.
+  ;; PRE: socket has threadsafe socket type
+  (zmq_poller_modify poller ptr event)
+  (let -loop ()
+    (define events (zmq_getsockopt/int ptr 'events))
+    (cond [(positive? (bitwise-and events event))
+           (zmq_poller_modify poller ptr 0)
+           (end-atomic)]
+          [else
+           (define fd (zmq_poller_fd poller))
+           (define fdsema (fd->evt fd 'read))
+           (end-atomic)
+           (log-zmq-debug "~s wait (poller); fd = ~s, socket = ~e" who fd sock)
+           (sync fdsema)
+           (start-atomic)
+           (-loop)])))
 
 (define (zmq-recv-string sock)
   (define msg (zmq-recv sock #:who 'zmq-recv-string))

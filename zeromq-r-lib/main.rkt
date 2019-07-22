@@ -397,11 +397,13 @@
   (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
   (cond [(>= s 0)
          (define frame (-get-msg-frame msg))
+         (define rtid (zmq_msg_routing_id msg))
          (define more? (zmq_msg_more msg))
          (zmq_msg_close msg)
-         (cond [more?
-                (-recv-frames-k who sock ptr (cons frame rframes))]
-               [else (lambda () (reverse (cons frame rframes)))])]
+         (let* ([rframes (if (zero? rtid) rframes (cons (routing-id rtid) rframes))]
+                [rframes (cons frame rframes)])
+           (cond [more? (-recv-frames-k who sock ptr msg rframes)]
+                 [else (lambda () (reverse rframes))]))]
         [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
          (zmq_msg_close msg)
          (lambda ()

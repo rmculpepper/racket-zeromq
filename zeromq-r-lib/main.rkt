@@ -69,6 +69,10 @@
 (define subscription/c (or/c bytes? string?))
 (define msg-frame/c (or/c bytes? string?))
 
+;; threadsafe socket types don't support ZMQ_FD; must use zmq_poller instead
+(define (socket-type-threadsafe? t)
+  (memq t '(client server radio dish)))
+
 ;; A RoutingId is (routing-id Nat)
 (struct routing-id (n)
   #:property prop:custom-write
@@ -145,6 +149,11 @@
   (unless zmq-lib
     (error 'zmq-socket "could not find libzmq library\n  error: ~s"
            zmq-load-fail-reason))
+  (when (and (socket-type-threadsafe? type) (not zmq_poller_fd))
+    (error 'zmq-socket "socket type is not supported~a~a\n  type: ~e\n  version: ~a"
+           ";\n cannot find `zmq_poller_fd` necessary for DRAFT socket types"
+           ";\n libzmq must be version >= 4.3.2 and compiled with DRAFT API enabled"
+           type (zmq-version-string)))
   (start-atomic)
   (define ctx (-get-ctx))
   (define ptr (zmq_socket ctx type))
@@ -176,7 +185,7 @@
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
       (define fd (zmq_getsockopt/int ptr 'fd))
-      (fd->evt fd 'remove)
+      (when fd (fd->evt fd 'remove))
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
           (log-zmq-error "error closing socket~a" (errno-lines)))))))
@@ -387,7 +396,20 @@
   (define events (zmq_getsockopt/int ptr 'events))
   (cond [(positive? (bitwise-and events event))
          (end-atomic)]
+        [(socket-type-threadsafe? (socket-type sock))
+         ;; Threadsafe sockets do not support ZMQ_FD, must use zmq_poller.
+         ;; For now, create new poller for each wait. FIXME!
+         (define poller (zmq_poller_new))
+         (zmq_poller_add poller ptr event)
+         (define fd (zmq_poller_fd poller))
+         (define fdsema (fd->evt fd 'read))
+         (end-atomic)
+         (log-zmq-debug "~s wait; fd = ~s, socket = ~e" who fd sock)
+         (sync fdsema)
+         (zmq_poller_destroy poller)
+         (wait who sock event)]
         [else
+         ;; Non-threadsafe sockets support ZMQ_FD.
          (define fd (zmq_getsockopt/int ptr 'fd))
          (define fdsema (fd->evt fd 'read))
          (end-atomic)
@@ -438,7 +460,7 @@
          (zmq_msg_close msg)
          (let ([rframes (cons frame rframes)]
                [peer (if (zero? rtid) peer (routing-id rtid))])
-           (cond [more? (-recv-frames-k who sock ptr msg rframes peer)]
+           (cond [more? (-recv-frames-k who sock ptr rframes peer)]
                  [else (lambda () (values peer (reverse rframes)))]))]
         [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
          (zmq_msg_close msg)

@@ -51,7 +51,15 @@
            push = 8
            xpub = 9
            xsub = 10
-           stream = 11)
+           stream = 11
+           server = 12
+           client = 13
+           radio  = 14
+           dish   = 15
+           gather = 16
+           scatter = 17
+           dgram = 18
+           )
          _int))
 
 (define _zmq_socket_option
@@ -181,6 +189,10 @@
         (patch : (_ptr o _int))
         -> _void
         -> (list major minor patch)))
+
+(define (zmq-version-string)
+  (define v (zmq_version))
+  (format "~a.~a.~a" (car v) (cadr v) (caddr v)))
 
 (define-zmq zmq_strerror
   (_fun _int -> _string))
@@ -316,3 +328,55 @@
 (define-zmq zmq_msg_send
   (_fun* _zmq_msg-pointer _zmq_socket-pointer _zmq_sendrecv_flags
          -> _int))
+
+;; ============================================================
+;; DRAFT API
+
+(define draft-socket-types
+  '(server client radio dish gather scatter dgram))
+(define threadsafe-socket-types ;; ??
+  '(server client radio dish))
+
+(define-zmq zmq_msg_routing_id
+  (_fun _zmq_msg-pointer -> _uint32)
+  #:fail (lambda () (lambda (msg) 0)))
+(define-zmq zmq_msg_set_routing_id
+  (_fun _zmq_msg-pointer _uint32 -> _int))
+
+(define-zmq zmq_msg_group
+  (_fun _zmq_msg-pointer -> _string/utf-8))
+(define-zmq zmq_msg_set_group
+  (_fun _zmq_msg-pointer _string/utf-8 -> _int))
+
+;; ----------------------------------------
+;; Poller
+
+(define-cpointer-type _zmq_poller-pointer)
+
+(define-zmq zmq_poller_new
+  (_fun -> _zmq_poller-pointer))
+(define-zmq zmq_poller_destroy
+  (_fun (_ptr i _zmq_poller-pointer) -> _int))
+
+(define-zmq zmq_poller_add
+  (_fun _zmq_poller-pointer _zmq_socket-pointer (_pointer = #f) _short -> _int))
+(define-zmq zmq_poller_modify
+  (_fun _zmq_poller-pointer _zmq_socket-pointer _short -> _int))
+(define-zmq zmq_poller_remove
+  (_fun _zmq_poller-pointer _zmq_socket-pointer -> _int))
+
+(define-zmq zmq_poller_fd
+  (_fun _zmq_poller-pointer (fd : (_ptr o _int)) -> (s : _int) -> (and (zero? s) fd))
+  #:fail (lambda () #f))
+
+(define-cstruct _zmq_poller_event_t
+  ([socket _zmq_socket-pointer/null]
+   [fd _int]
+   [user_data _pointer]
+   [events _short])
+  #:malloc-mode 'atomic-interior)
+
+(define-zmq zmq_poller_wait
+  (_fun _zmq_poller-pointer _zmq_poller_event_t-pointer _long -> _int))
+(define-zmq zmq_poller_wait_all
+  (_fun _zmq_poller-pointer _zmq_poller_event_t-pointer _int _long -> _int))

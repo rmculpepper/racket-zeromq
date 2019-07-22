@@ -1,5 +1,6 @@
 #lang racket/base
 (require racket/contract/base
+         racket/match
          racket/struct
          (except-in ffi/unsafe ->)
          ffi/unsafe/atomic
@@ -42,19 +43,27 @@
           [zmq-unsubscribe
            (->* [zmq-socket?] [] #:rest (listof bytes?) void?)]
           [zmq-send
-           (->* [zmq-socket? msg-frame/c] [] #:rest (listof msg-frame/c) void?)]
+           (->* [zmq-socket? msg-frame/c]
+                [#:to (or/c routing-id? #f)]
+                #:rest (listof msg-frame/c) void?)]
           [zmq-send*
-           (-> zmq-socket? (non-empty-listof msg-frame/c) void?)]
-          [zmq-recv
-           (-> zmq-socket? bytes?)]
+           (->* [zmq-socket? (non-empty-listof msg-frame/c)]
+                [#:to (or/c routing-id? #f)]
+                void?)]
           [zmq-recv-string
            (-> zmq-socket? string?)]
+          [zmq-recv
+           (-> zmq-socket? bytes?)]
           [zmq-recv*
-           (-> zmq-socket? (listof bytes?))]))
+           (-> zmq-socket? (listof bytes?))]
+          [zmq-peer-recv
+           (-> zmq-socket? (values (or/c routing-id? #f) bytes?))]
+          [zmq-peer-recv*
+           (-> zmq-socket? (values (or/c routing-id? #f) (listof bytes?)))]))
 
 (define socket-type/c
   (or/c 'pair 'pub 'sub 'req 'rep 'dealer 'router 'pull 'push 'xpub 'xsub 'stream
-        'client 'server))
+        'client 'server 'radio 'dish))
 (define bind-addr/c string?)
 (define connect-addr/c string?)
 (define subscription/c (or/c bytes? string?))
@@ -328,33 +337,46 @@
 ;; as more frames in first message. (Likewise for read.)
 
 ;; zmq-send : Socket MsgPart ... -> Void
-(define (zmq-send sock part1 . parts)
-  (zmq-send* sock (cons part1 parts) #:who 'zmq-send))
+(define (zmq-send sock #:to [to #f] part1 . parts)
+  (zmq-send* sock (cons part1 parts) #:to to #:who 'zmq-send))
 
-(define (zmq-send* sock parts #:who [who 'zmq-send*])
+(define (zmq-send* sock parts #:to [to #f] #:who [who 'zmq-send*])
   (define frames (map coerce->bytes parts))
   (call-with-semaphore (socket-wsema sock)
-    (lambda () (send-frames who sock 0 frames))))
+    (lambda () (send-frames who sock 0 frames to))))
 
-(define (send-frames who sock n frames)
+(define (send-frames who sock n frames to)
   ((call-with-socket-ptr who sock
-     (lambda (ptr) (-send-frames-k who sock ptr n frames)))))
+     (lambda (ptr) (-send-frames-k who sock ptr n frames to)))))
 
-(define (-send-frames-k who sock ptr n frames)
+(define (-send-frames-k who sock ptr n frames to)
   (define last? (null? (cdr frames)))
-  (define s (zmq_send ptr (car frames) (if last? '(ZMQ_DONTWAIT) '(ZMQ_DONTWAIT ZMQ_SNDMORE))))
+  (define s (-send-one-frame ptr (car frames) last? to))
   (cond [(>= s 0)
          (if (pair? (cdr frames))
-             (-send-frames-k who sock ptr (add1 n) (cdr frames))
+             (-send-frames-k who sock ptr (add1 n) (cdr frames) to)
              (lambda () (void)))]
         [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
          (lambda ()
            (wait who sock ZMQ_POLLOUT)
-           (send-frames who sock n frames))]
+           (send-frames who sock n frames to))]
         [else
          (lambda ()
            (error who "error sending message\n  frame: ~s of ~s~a"
                   (add1 n) (+ n (length frames)) (errno-lines)))]))
+
+(define (-send-one-frame ptr frame last? to)
+  (define flags (if last? '(ZMQ_DONTWAIT) '(ZMQ_DONTWAIT ZMQ_SNDMORE)))
+  (cond [to
+         (define msg (new-zmq_msg))
+         (zmq_msg_init_size msg (bytes-length frame))
+         (zmq_msg_set_routing_id msg (routing-id-n to))
+         (memcpy (zmq_msg_data msg) frame (bytes-length frame))
+         (define s (zmq_msg_send msg ptr flags))
+         (when (< s 0) (zmq_msg_close msg))
+         s]
+        [else
+         (zmq_send ptr frame flags)]))
 
 (define (wait who sock event)
   (start-atomic)
@@ -373,25 +395,39 @@
          (sync fdsema)
          (wait who sock event)]))
 
-(define (zmq-recv sock #:who [who 'zmq-recv])
-  (define frames (zmq-recv* sock #:who who))
-  (cond [(and (pair? frames) (null? (cdr frames)))
-         (car frames)]
-        [else (error who "received multi-frame message\n  frames: ~s" (length frames))]))
-
 (define (zmq-recv-string sock)
   (define msg (zmq-recv sock #:who 'zmq-recv-string))
   (bytes->string/utf-8 msg))
 
+(define (zmq-recv sock #:who [who 'zmq-recv])
+  (define-values (peer frame) (zmq-peer-recv sock #:who who))
+  (when peer (error-discarding-peer who sock peer))
+  frame)
+
+(define (zmq-peer-recv sock #:who [who 'zmq-peer-recv])
+  (define-values (peer frames) (zmq-peer-recv* sock #:who who))
+  (match frames
+    [(list (? bytes? frame)) (values peer frame)]
+    [_ (error who "received multi-frame message\n  frames: ~s\n  socket: ~e"
+              (length frames) sock)]))
+
 (define (zmq-recv* sock #:who [who 'zmq-recv*])
+  (define-values (peer msgs) (zmq-peer-recv* sock #:who who))
+  (when peer (error-discarding-peer who sock peer))
+  msgs)
+
+(define (error-discarding-peer who sock peer)
+  (error who "received peer routing id\n  peer: ~e\n  socket: ~e" peer sock))
+
+(define (zmq-peer-recv* sock #:who [who 'zmq-recv*])
   (call-with-semaphore (socket-rsema sock)
-    (lambda () (recv-frames who sock null))))
+    (lambda () (recv-frames who sock null #f))))
 
-(define (recv-frames who sock rframes)
+(define (recv-frames who sock rframes peer)
   ((call-with-socket-ptr who sock
-     (lambda (ptr) (-recv-frames-k who sock ptr rframes)))))
+     (lambda (ptr) (-recv-frames-k who sock ptr rframes peer)))))
 
-(define (-recv-frames-k who sock ptr rframes)
+(define (-recv-frames-k who sock ptr rframes peer)
   (define msg (new-zmq_msg))
   (zmq_msg_init msg)
   (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
@@ -400,22 +436,23 @@
          (define rtid (zmq_msg_routing_id msg))
          (define more? (zmq_msg_more msg))
          (zmq_msg_close msg)
-         (let* ([rframes (if (zero? rtid) rframes (cons (routing-id rtid) rframes))]
-                [rframes (cons frame rframes)])
-           (cond [more? (-recv-frames-k who sock ptr msg rframes)]
-                 [else (lambda () (reverse rframes))]))]
+         (let ([rframes (cons frame rframes)]
+               [peer (if (zero? rtid) peer (routing-id rtid))])
+           (cond [more? (-recv-frames-k who sock ptr msg rframes peer)]
+                 [else (lambda () (values peer (reverse rframes)))]))]
         [(or (= (saved-errno) EAGAIN) (= (saved-errno) EINTR))
          (zmq_msg_close msg)
          (lambda ()
            (wait who sock ZMQ_POLLIN)
-           (recv-frames who sock rframes))]
+           (recv-frames who sock rframes peer))]
         [else
          (zmq_msg_close msg)
          (lambda ()
-           (error who "error receiving message~a~a"
+           (error who "error receiving message~a~a\n  socket: ~e"
                   (let ([ct (length rframes)])
                     (if (zero? ct) "" (format "\n  frame: ~s" (add1 ct))))
-                  (errno-lines)))]))
+                  (errno-lines)
+                  sock))]))
 
 (define (-get-msg-frame msg)
   (define size (zmq_msg_size msg))

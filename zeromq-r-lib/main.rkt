@@ -6,7 +6,6 @@
          (except-in ffi/unsafe ->)
          ffi/unsafe/atomic
          ffi/unsafe/custodian
-         ffi/unsafe/port
          ffi/unsafe/schedule
          "private/ffi.rkt"
          "private/mutex.rkt"
@@ -73,22 +72,86 @@
 ;; ============================================================
 ;; Context
 
-;; There is one implicit context created on demand, only finalized
-;; when the namespace goes away.
+;; There is one implicit Instance (containing a zmq_ctx and a
+;; zmq_poller) created on demand, only finalized when the namespace
+;; and all created sockets go away.
+(struct inst
+  (ctx                  ;; _zmq_ctx-pointer
+   poller               ;; _zmq_poller-pointer or #f if not supported
+   sockptr=>events      ;; Hasheq[_zmq_socket-pointer => Nat]
+   [wakeups #:mutable]  ;; Boolean -- #t if last poller callback was given wakeups
+   ))
 
-(define the-ctx #f)
+(define the-inst #f)
 
-;; -get-ctx : -> Context
-(define (-get-ctx)
-  (unless the-ctx
+(define (-get-inst)
+  (unless the-inst
     (log-zmq-debug "creating zmq_ctx")
     (define ctx (zmq_ctx_new))
+    (log-zmq-debug "creating zmq_pollers")
+    (define poller (and poller-available? (zmq_poller_new)))
     (register-finalizer ctx
-      (lambda (ctx)
-        (log-zmq-debug "destroying zmq_ctx")
-        (zmq_ctx_destroy ctx)))
-    (set! the-ctx ctx))
-  the-ctx)
+                        (lambda (ctx)
+                          (log-zmq-debug "destroying zmq_ctx")
+                          (zmq_ctx_destroy ctx)))
+    (register-finalizer poller
+                        (lambda (poller)
+                          (log-zmq-debug "destroying zmq_poller")
+                          (zmq_poller_destroy poller)))
+    (set! the-inst (inst ctx poller (make-hasheq) #f)))
+  the-inst)
+
+;; -get-ctx : -> Context
+(define (-get-ctx) (inst-ctx (-get-inst)))
+
+;; -inst-remove-sockptr : Inst _zmq_socket-pointer -> Void
+(define (-inst-remove-sockptr in ptr)
+  (match-define (inst _ poller sockptr=>events _) in)
+  (when (hash-has-key? sockptr=>events ptr)
+    (zmq_poller_remove poller ptr)
+    (hash-remove! sockptr=>events ptr)))
+
+;; -inst-check-wakeup : Inst Wakeups -> Void
+;; If stored wakeups was #t and current is #f, then the previous
+;; wakeup-gathering round is over, so clear the poller.
+(define (-inst-check-wakeup in wakeups)
+  ;; (log-zmq-debug "WAKEUPS: OLD = ~s, NEW = ~s" (inst-wakeups in) wakeups)
+  (cond [(not in) (void)] ;; socket closed
+        [(and (eq? (inst-wakeups in) #t) (eq? wakeups #f))
+         ;; (log-zmq-debug "RESETTING WAKEUPS")
+         (define poller (inst-poller in))
+         (define sockptr=>events (inst-sockptr=>events in))
+         (log-zmq-debug "new wakeup round, clearing poller (~s sockets)" (hash-count sockptr=>events))
+         (for ([ptr (in-hash-keys sockptr=>events)])
+           (zmq_poller_remove poller ptr))
+         (hash-clear! sockptr=>events)
+         (set-inst-wakeups! in #f)]
+        [(and (eq? (inst-wakeups in) #f) wakeups)
+         (set-inst-wakeups! in #t)]))
+
+;; -inst-add-wakeup : Socket _zmq_socket-pointer Nat Wakeups -> Boolean
+;; Returns #t if sleep should be canceled, #f otherwise.
+(define (-inst-add-wakeup sock ptr event wakeups)
+  (define in (socket-inst sock))
+  (define (-wait-on-fd fd)
+    (unsafe-poll-ctx-fd-wakeup wakeups fd 'read)
+    (log-zmq-debug "wait; fd = ~s, socket = ~e" fd sock)
+    #f)
+  (cond [(threadsafe-socket? sock)
+         (match-define (inst _ poller sockptr=>events _) (socket-inst sock))
+         (cond [(hash-ref sockptr=>events ptr #f)
+                => (lambda (old-event)
+                     (let ([new-event (bitwise-ior old-event event)])
+                       (zmq_poller_modify poller ptr new-event)
+                       (hash-set! sockptr=>events ptr new-event)))]
+               [else
+                (zmq_poller_add poller ptr event)
+                (hash-set! sockptr=>events ptr event)])
+         (cond [(-poller-wait poller)
+                (log-zmq-debug "poller returned immediately, socket = ~e" sock)
+                #t]
+               [else (-wait-on-fd (zmq_poller_fd poller))])]
+        [else (-wait-on-fd (zmq_getsockopt/int ptr 'fd))]))
 
 ;; ============================================================
 ;; Socket
@@ -96,10 +159,9 @@
 (struct socket
   (type                 ;; Symbol (_zmq_socket_type)
    [ptr #:mutable]      ;; _zmq_socket-pointer or #f -- #f means closed
-   wmutex               ;; Mutex or #f -- protects sends, omit if single-frame only socket
    closed-sema          ;; Semaphore -- 0 initially, 1 if closed
    [ends #:mutable]     ;; (Listof Endpoint), where Endpoint = (cons (U 'bind 'connect) String)
-   )
+   [inst #:mutable])    ;; Instance or #f -- #f only if closed
   ;; Like a channel, a zmq-socket acts as an evt. It is ready for sync when a
   ;; message can be read, and sync *reads and returns* the message itself.
   #:property prop:evt
@@ -123,6 +185,12 @@
              (if (pair? binds) (list (pp:lit "#:bind") binds) '())
              (if (pair? connects) (list (pp:lit "#:connect") connects) '())))))
 
+(struct standard-socket socket
+  (wmutex       ;; Mutex -- protects sends, needed because of multi-frame sends
+   ))
+
+(struct threadsafe-socket socket ())
+
 (define (zmq-socket? v) (socket? v))
 
 ;; ------------------------------------------------------------
@@ -137,14 +205,20 @@
   (unless zmq-lib
     (error 'zmq-socket "could not find libzmq library\n  error: ~s"
            zmq-load-fail-reason))
+  (when (and (threadsafe-socket-type? type) (not zmq_poller_fd))
+    (error 'zmq-socket "socket type is not supported~a~a\n  type: ~e\n  version: ~a"
+           ";\n cannot find `zmq_poller_fd` necessary for DRAFT socket types"
+           ";\n libzmq must be version >= 4.3.2 and compiled with DRAFT API enabled"
+           type (zmq-version-string)))
   (start-atomic)
-  (define ctx (-get-ctx))
-  (define ptr (zmq_socket ctx type))
+  (define ptr (zmq_socket (-get-ctx) type))
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define wmutex (if (single-frame-socket-type? type) #f (make-mutex)))
-  (define sock (socket type ptr wmutex (make-semaphore 0) null))
+  (define sock
+    (if (threadsafe-socket-type? type)
+        (threadsafe-socket type ptr (make-semaphore 0) null the-inst)
+        (standard-socket   type ptr (make-semaphore 0) null the-inst (make-mutex))))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -168,17 +242,12 @@
                      (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type))
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
-      (define fd (zmq_getsockopt/int ptr 'fd))
-      (fd->evt fd 'remove)
+      (-inst-remove-sockptr (socket-inst sock) ptr)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
           (log-zmq-error "error closing socket~a" (errno-lines))))
+      (set-socket-inst! sock #f)
       (semaphore-post (socket-closed-sema sock)))))
-
-(define (fd->evt fd mode)
-  ;; The fd *must* be interpreted as a socket on Windows and Mac OS.
-  ;; On Linux it does not seem to matter.
-  (unsafe-fd->evt fd mode #t))
 
 (define (zmq-closed? sock) (not (socket-ptr sock)))
 
@@ -386,11 +455,10 @@
 
 (define (zmq-send-message sock m #:who [who 'zmq-send-message])
   (define (dead-error) (error who "socket is permanently locked for writes\n  socket: ~e" sock))
-  (cond [(socket-wmutex sock)
-         => (lambda (wmutex)
-              (call-with-mutex wmutex
-                (lambda () (send-frames who sock 0 (message-frames m) (message-meta m)))
-                #:on-dead dead-error))]
+  (cond [(standard-socket? sock)
+         (call-with-mutex (standard-socket-wmutex sock)
+           (lambda () (send-frames who sock 0 (message-frames m) (message-meta m)))
+           #:on-dead dead-error)]
         [(zmq-message/single-frame? m)
          (send-frames who sock 0 (message-frames m) (message-meta m))]
         [else
@@ -417,7 +485,7 @@
           [(= (saved-errno) EAGAIN)
            (zmq_msg_close msg)
            (lambda ()
-             (wait who sock ZMQ_POLLOUT)
+             (sync (send-ready-evt sock))
              (send-frames who sock n frames meta))]
           [else
            (zmq_msg_close msg)
@@ -425,22 +493,28 @@
              (error who "error sending message\n  frame: ~s of ~s~a"
                     (add1 n) (+ n (length frames)) (errno-lines)))])))
 
-(define (wait who sock event)
-  (start-atomic)
-  (define ptr (socket-ptr sock))
-  (unless ptr
-    (end-atomic)
-    (error who "socket is closed"))
-  (define events (zmq_getsockopt/int ptr 'events))
-  (cond [(positive? (bitwise-and events event))
-         (end-atomic)]
-        [else
-         (define fd (zmq_getsockopt/int ptr 'fd))
-         (define fdsema (fd->evt fd 'read))
-         (end-atomic)
-         (log-zmq-debug "~s wait; fd = ~s, socket = ~e" who fd sock)
-         (sync fdsema)
-         (wait who sock event)]))
+;; send-ready-evt is an internal helper evt whose sync result is 'ready
+(struct send-ready-evt (sock)
+  #:property prop:evt
+  (unsafe-poller
+   (lambda (self wakeups)
+     (define sock (send-ready-evt-sock self))
+     (define ptr (socket-ptr sock))
+     (define (ready) (values '(ready) #f))
+     (define (not-ready) (values #f self))
+     (-inst-check-wakeup (socket-inst sock) wakeups)
+     (cond [(not ptr) (ready)] ;; ok, send-frames will report socket closed error
+           [(-ready? ptr ZMQ_POLLOUT) (ready)]
+           [wakeups (-wait/wakeups self sock ptr ZMQ_POLLOUT wakeups)]
+           [else (not-ready)]))))
+
+(define (-wait/wakeups self sock ptr event wakeups)
+  (define (cancel-sleep) (values '(zmq:ask-again) #f))
+  (define (not-ready) (values #f self))
+  (if (-inst-add-wakeup sock ptr event wakeups) (cancel-sleep) (not-ready)))
+
+(define (-ready? ptr event)
+  (positive? (bitwise-and (zmq_getsockopt/int ptr 'events) event)))
 
 (define (-init-send-msg msg frame meta)
   ;; PRE: msg is uninitialized
@@ -483,18 +557,17 @@
    (lambda (self wakeups)
      (define sock (recv-evt-sock self))
      (define ptr (socket-ptr sock))
-     (cond [(not ptr) (values #f self)]
-           [(positive? (bitwise-and (zmq_getsockopt/int ptr 'events) ZMQ_POLLIN))
-            (cond [wakeups
-                   ;; wakeups => can't commit read, so just cancel sleep
-                   (values '(ask-me-again) #f)]
+     (define (cancel-sleep) (values '(zeromq:ask-me-again) #f))
+     (define (not-ready) (values #f self))
+     (-inst-check-wakeup (socket-inst sock) wakeups)
+     (cond [(not ptr) (not-ready)]
+           [(-ready? ptr ZMQ_POLLIN)
+            (cond [wakeups (cancel-sleep)]
                   [(-try-recv sock ptr)
                    => (lambda (r) (values (list r) #f))]
-                  [else (values #f self)])]
-           [else
-            (when wakeups
-              (unsafe-poll-ctx-fd-wakeup wakeups (zmq_getsockopt/int ptr 'fd) 'read))
-            (values #f self)]))))
+                  [else (not-ready)])]
+           [wakeups (-wait/wakeups self sock ptr ZMQ_POLLIN wakeups)]
+           [else (not-ready)]))))
 
 ;; -try-recv : Socket _socket-pointer -> (U #f Message (Symbol -> (error)))
 (define (-try-recv sock ptr)

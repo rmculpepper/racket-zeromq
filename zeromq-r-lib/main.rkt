@@ -53,7 +53,8 @@
            (-> zmq-socket? (listof bytes?))]))
 
 (define socket-type/c
-  (or/c 'pair 'pub 'sub 'req 'rep 'dealer 'router 'pull 'push 'xpub 'xsub 'stream))
+  (or/c 'pair 'pub 'sub 'req 'rep 'dealer 'router 'pull 'push 'xpub 'xsub 'stream
+        'client 'server))
 (define bind-addr/c string?)
 (define connect-addr/c string?)
 (define subscription/c (or/c bytes? string?))

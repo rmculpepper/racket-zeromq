@@ -335,18 +335,29 @@
 (define draft-socket-types
   '(server client radio dish gather scatter dgram))
 (define threadsafe-socket-types ;; ??
-  '(server client radio dish))
+  '(server client radio dish gather scatter))
+
+(define (threadsafe-socket-type? x)
+  (and (memq x threadsafe-socket-types) #t))
 
 (define-zmq zmq_msg_routing_id
   (_fun _zmq_msg-pointer -> _uint32)
   #:fail (lambda () (lambda (msg) 0)))
 (define-zmq zmq_msg_set_routing_id
-  (_fun _zmq_msg-pointer _uint32 -> _int))
+  (_fun _zmq_msg-pointer _uint32 -> _int)
+  #:fail (lambda () void))
 
 (define-zmq zmq_msg_group
-  (_fun _zmq_msg-pointer -> _string/utf-8))
+  (_fun _zmq_msg-pointer -> _bytes/nul-terminated)
+  #:fail (lambda () (lambda (msg) #f)))
 (define-zmq zmq_msg_set_group
-  (_fun _zmq_msg-pointer _string/utf-8 -> _int))
+  (_fun _zmq_msg-pointer _bytes/nul-terminated -> _int)
+  #:fail (lambda () void))
+
+(define-zmq zmq_join
+  (_fun* _zmq_socket-pointer _bytes/nul-terminated -> _int))
+(define-zmq zmq_leave
+  (_fun* _zmq_socket-pointer _bytes/nul-terminated -> _int))
 
 ;; ----------------------------------------
 ;; Poller
@@ -354,7 +365,8 @@
 (define-cpointer-type _zmq_poller-pointer)
 
 (define-zmq zmq_poller_new
-  (_fun -> _zmq_poller-pointer))
+  (_fun -> _zmq_poller-pointer)
+  #:fail (lambda () #f))
 (define-zmq zmq_poller_destroy
   (_fun (_ptr i _zmq_poller-pointer) -> _int))
 
@@ -380,3 +392,14 @@
   (_fun _zmq_poller-pointer _zmq_poller_event_t-pointer _long -> _int))
 (define-zmq zmq_poller_wait_all
   (_fun _zmq_poller-pointer _zmq_poller_event_t-pointer _int _long -> _int))
+
+;; Calling zmq_poller_wait_all seems to make poller to scan signalers and quiet
+;; its fd if there aren't any relevant events. Since we only do this before
+;; sleeping, and even one event is enough to cancel the sleep, an array of only
+;; one _zmq_poller_event_t is okay.
+(define (-poller-wait poller)
+  (define a (cast (malloc 'atomic-interior _zmq_poller_event_t)
+                  _pointer _zmq_poller_event_t-pointer))
+  (> (zmq_poller_wait_all poller a 1 0) 0))
+
+(define poller-available? (and zmq_poller_new zmq_poller_fd #t))

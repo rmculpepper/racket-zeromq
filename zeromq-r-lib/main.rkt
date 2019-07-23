@@ -676,26 +676,25 @@
 ;; socket types and APIs. It *will* disappear in the future without notice.
 (module* unstable-draft-4.3.2 #f
   ;; FIXME: contracts
-  (provide zmq-draft-socket
-           zmq-draft-available?
-           zmq-join
-           zmq-leave
-           zmq-message-routing-id
-           zmq-message-group)
+  (provide
+   zmq-draft-available?
+   (contract-out
+    [zmq-draft-socket
+     (->* [draft-socket-type/c]
+          [#:identity (or/c bytes? #f)
+           #:bind (or/c bind-addr/c (listof bind-addr/c))
+           #:connect (or/c connect-addr/c (listof connect-addr/c))
+           #:join (or/c subscription/c (listof subscription/c))]
+          zmq-socket?)]
+    [zmq-join
+     (-> zmq-socket? bytes? void?)]
+    [zmq-leave
+     (-> zmq-socket? bytes? void?)]
+    [zmq-message-routing-id
+     (-> zmq-message? (or/c #f exact-positive-integer?))]
+    [zmq-message-group
+     (-> zmq-message? (or/c #f bytes?))]))
 
   (define zmq-draft-available? poller-available?)
-
-  (define (zmq-draft-socket type
-                            #:identity [identity #f]
-                            #:bind [bind-addrs null]
-                            #:connect [connect-addrs null]
-                            #:subscribe [subscriptions null]
-                            #:join [groups null])
-    (unless (memq type draft-socket-types)
-      (raise-argument-error 'zmq-draft-socket "draft socket type" type))
-    (zmq-socket type
-                #:identity identity
-                #:bind bind-addrs
-                #:connect connect-addrs
-                #:subscribe subscriptions
-                #:join groups)))
+  (define zmq-draft-socket zmq-socket) ;; this module's contract allows #:join
+  (define draft-socket-type/c (or/c 'client 'server 'radio 'dish 'scatter 'gather)))

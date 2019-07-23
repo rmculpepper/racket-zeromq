@@ -11,6 +11,8 @@
          "private/mutex.rkt"
          "private/addr.rkt")
 (provide zmq-socket?
+         zmq-message?
+         (rename-out [zmq-message* zmq-message])
          (contract-out
           [zmq-socket
            (->* [socket-type/c]
@@ -54,7 +56,15 @@
           [zmq-recv-string
            (-> zmq-socket? string?)]
           [zmq-recv*
-           (-> zmq-socket? (listof bytes?))]))
+           (-> zmq-socket? (listof bytes?))]
+          [zmq-message-frames
+           (-> zmq-message? (listof bytes?))]
+          [zmq-message-frame
+           (-> zmq-message? bytes?)]
+          [zmq-recv-message
+           (-> zmq-socket? zmq-message?)]
+          [zmq-send-message
+           (-> zmq-socket? zmq-message? void?)]))
 
 (define socket-type/c
   (or/c 'pair 'pub 'sub 'req 'rep 'dealer 'router 'pull 'push 'xpub 'xsub 'stream))
@@ -415,7 +425,19 @@
 ;; A Message is (message (Listof Bytes) Meta)
 ;; A message struct represents a *whole* (possibly multi-frame) message along
 ;; with metadata such as routing-id and group for draft sockets (FIXME).
-(struct message (frames meta) #:transparent)
+(struct message (frames meta)
+  #:property prop:custom-write
+  (make-constructor-style-printer
+   (lambda (self) 'zmq-message)
+   (lambda (self)
+     (cons (message-frames self)
+           (let ([meta (message-meta self)])
+             (cond [(exact-integer? meta)
+                    (list (unquoted-printing-string "#:routing-id") meta)]
+                   [(bytes? meta)
+                    (list (unquoted-printing-string "#:group") meta)]
+                   [else null])))))
+  #:transparent)
 
 ;; A Meta is one of
 ;; - #f     -- nothing
@@ -423,7 +445,7 @@
 ;; - Bytes  -- a group (RADIO/DISH only)
 ;; but may change in the future if libzmq changes.
 
-(define (zmq-message* frame/s #:routing-id [routing-id #f] #:group [group #f])
+(define (make-zmq-message frame/s #:routing-id [routing-id #f] #:group [group #f])
   (let ([frames (cond [(bytes? frame/s) (list frame/s)]
                       [(string? frame/s) (list (coerce->bytes frame/s))]
                       [(list? frame/s) (map coerce->bytes frame/s)])])
@@ -431,19 +453,6 @@
       (error 'zmq-message "cannot have both a routing-id and a group\n  routing-id: ~e\n  group: ~e"
              routing-id group))
     (message frames (or routing-id group))))
-
-(define-match-expander zmq-message
-  (syntax-parser
-    [(_ frames-pat:expr
-        (~alt (~optional (~seq #:routing-id routing-id-pat:expr))
-              (~optional (~seq #:group group-pat:expr)))
-        ...)
-     #'(? zmq-message?
-          (app zmq-message-frames frames-pat)
-          (~? (app zmq-message-routing-id routing-id-pat))
-          (~? (app zmq-message-group group-pat)))])
-  (set!-transformer-procedure
-   (make-variable-like-transformer #'zmq-message*)))
 
 (define (zmq-message? v) (message? v))
 (define (zmq-message-frames m)
@@ -456,6 +465,26 @@
 (define (zmq-message-group m)
   (define meta (message-meta m))
   (and (bytes? meta) meta))
+
+(define-module-boundary-contract zmq-message
+  make-zmq-message
+  (->* [(or/c (listof (or/c string? bytes?)) string? bytes?)]
+       [#:routing-id (or/c #f exact-positive-integer?)
+        #:group (or/c #f bytes?)]
+       zmq-message?))
+
+(define-match-expander zmq-message*
+  (syntax-parser
+    [(_ frames-pat:expr
+        (~alt (~optional (~seq #:routing-id routing-id-pat:expr))
+              (~optional (~seq #:group group-pat:expr)))
+        ...)
+     #'(? zmq-message?
+          (app zmq-message-frames frames-pat)
+          (~? (app zmq-message-routing-id routing-id-pat))
+          (~? (app zmq-message-group group-pat)))])
+  (set!-transformer-procedure
+   (make-variable-like-transformer #'zmq-message)))
 
 ;; ----------------------------------------
 ;; Send
@@ -651,13 +680,8 @@
            zmq-draft-available?
            zmq-join
            zmq-leave
-           zmq-message
-           zmq-message-frames
-           zmq-message-frame
            zmq-message-routing-id
-           zmq-message-group
-           zmq-recv-message
-           zmq-send-message)
+           zmq-message-group)
 
   (define zmq-draft-available? poller-available?)
 

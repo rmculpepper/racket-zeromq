@@ -1,5 +1,7 @@
 #lang racket/base
-(require racket/contract/base
+(require (for-syntax racket/base syntax/parse syntax/transformer)
+         racket/contract/base
+         racket/match
          racket/struct
          (except-in ffi/unsafe ->)
          ffi/unsafe/atomic
@@ -323,10 +325,50 @@
 ;; ----------------------------------------
 ;; Messages
 
-;; A Message is (zmq-message (Listof Bytes) ???)
-;; A zmq-message struct represents a whole (possibly multi-frame) message along
+;; A Message is (message (Listof Bytes) Meta)
+;; A message struct represents a *whole* (possibly multi-frame) message along
 ;; with metadata such as routing-id and group for draft sockets (FIXME).
-(struct zmq-message (frames meta))
+(struct message (frames meta) #:transparent)
+
+;; A Meta is one of
+;; - #f     -- nothing
+;; - Nat    -- a routing-id (CLIENT/SERVER only)
+;; - Bytes  -- a group (RADIO/DISH only)
+;; but may change in the future if libzmq changes.
+
+(define (zmq-message* frame/s #:routing-id [routing-id #f] #:group [group #f])
+  (let ([frames (cond [(bytes? frame/s) (list frame/s)]
+                      [(string? frame/s) (list (coerce->bytes frame/s))]
+                      [(list? frame/s) (map coerce->bytes frame/s)])])
+    (when (and routing-id group)
+      (error 'zmq-message "cannot have both a routing-id and a group\n  routing-id: ~e\n  group: ~e"
+             routing-id group))
+    (message frames (or routing-id group))))
+
+(define-match-expander zmq-message
+  (syntax-parser
+    [(_ frames-pat:expr
+        (~alt (~optional (~seq #:routing-id routing-id-pat:expr))
+              (~optional (~seq #:group group-pat:expr)))
+        ...)
+     #'(? zmq-message?
+          (app zmq-message-frames frames-pat)
+          (~? (app zmq-message-routing-id routing-id-pat))
+          (~? (app zmq-message-group group-pat)))])
+  (set!-transformer-procedure
+   (make-variable-like-transformer #'zmq-message*)))
+
+(define (zmq-message? v) (message? v))
+(define (zmq-message-frames m)
+  (message-frames m))
+(define (zmq-message-frame m)
+  (car (message-frames m)))
+(define (zmq-message-routing-id m)
+  (define meta (message-meta m))
+  (and (exact-positive-integer? meta) meta))
+(define (zmq-message-group m)
+  (define meta (message-meta m))
+  (and (bytes? meta) meta))
 
 ;; ----------------------------------------
 ;; Send
@@ -339,11 +381,11 @@
 
 (define (zmq-send* sock parts #:who [who 'zmq-send*])
   (define frames (map coerce->bytes parts))
-  (zmq-send-message sock (zmq-message frames #f) #:who who))
+  (zmq-send-message sock (message frames #f) #:who who))
 
 (define (zmq-send-message sock m #:who [who 'zmq-send-message])
   (call-with-mutex (socket-wmutex sock)
-    (lambda () (send-frames who sock 0 (zmq-message-frames m) (zmq-message-meta m)))
+    (lambda () (send-frames who sock 0 (message-frames m) (message-meta m)))
     #:on-dead (lambda () (error who "socket is permanently locked for writes\n  socket: ~e" sock))))
 
 (define (send-frames who sock n frames meta)
@@ -395,7 +437,11 @@
   ;; PRE: msg is uninitialized
   (zmq_msg_init_size msg (bytes-length frame))
   (memcpy (zmq_msg_data msg) frame (bytes-length frame))
-  ;; FIXME: routing-id, group, etc
+  (cond [(exact-integer? meta)
+         (zmq_msg_set_routing_id msg meta)]
+        [(bytes? meta)
+         (zmq_msg_set_group msg meta)]
+        [else (void)])
   (void))
 
 ;; ----------------------------------------
@@ -457,7 +503,7 @@
     (let ([rframes (cons (-get-msg-frame msg) rframes)])
       (cond [(zmq_msg_more msg)
              (-get-more-frames (add1 n) meta rframes)]
-            [else (zmq-message (reverse rframes) meta)])))
+            [else (message (reverse rframes) meta)])))
   (define (-get-more-frames n meta rframes)
     (define s (zmq_msg_recv msg ptr '(ZMQ_DONTWAIT)))
     (cond [(>= s 0) (-get-frames n meta rframes)]
@@ -480,8 +526,11 @@
   frame)
 
 (define (-get-msg-meta msg)
-  ;; FIXME: routing-id, group, etc
-  '#hasheq())
+  (define routing-id (zmq_msg_routing_id msg))
+  (define group (zmq_msg_group msg))
+  (cond [(not (zero? routing-id)) routing-id]
+        [group group]
+        [else #f]))
 
 ;; ============================================================
 

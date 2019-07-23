@@ -201,7 +201,8 @@
                     #:identity [identity #f]
                     #:bind [bind-addrs null]
                     #:connect [connect-addrs null]
-                    #:subscribe [subscriptions null])
+                    #:subscribe [subscriptions null]
+                    #:join [groups null])
   (unless zmq-lib
     (error 'zmq-socket "could not find libzmq library\n  error: ~s"
            zmq-load-fail-reason))
@@ -228,6 +229,7 @@
   (apply zmq-subscribe sock (coerce->list subscriptions))
   (apply zmq-bind sock (coerce->list bind-addrs))
   (apply zmq-connect sock (coerce->list connect-addrs))
+  (apply zmq-join sock (coerce->list groups))
   sock)
 
 (define (zmq-close sock)
@@ -389,6 +391,21 @@
       (lambda (ptr)
         (for ([sub (in-list subs)])
           (let ([s (zmq_setsockopt/bytes ptr mode sub)])
+            (unless (zero? s)
+              (error who "~a error~a" mode (errno-lines)))))))))
+
+(define (zmq-join sock . groups)
+  (*join 'zmq-join 'join sock (map coerce->bytes groups)))
+(define (zmq-leave sock . groups)
+  (*join 'zmq-leave 'leave sock (map coerce->bytes groups)))
+
+(define (*join who mode sock subs)
+  ;; FIXME: check socket type?
+  (when (pair? subs)
+    (call-with-socket-ptr who sock
+      (lambda (ptr)
+        (for ([sub (in-list subs)])
+          (let ([s (case mode [(join) (zmq_join ptr sub)] [(leave) (zmq_leave ptr sub)])])
             (unless (zero? s)
               (error who "~a error~a" mode (errno-lines)))))))))
 
@@ -632,6 +649,8 @@
   ;; FIXME: contracts
   (provide zmq-draft-socket
            zmq-draft-available?
+           zmq-join
+           zmq-leave
            zmq-message
            zmq-message-frames
            zmq-message-frame
@@ -646,11 +665,13 @@
                             #:identity [identity #f]
                             #:bind [bind-addrs null]
                             #:connect [connect-addrs null]
-                            #:subscribe [subscriptions null])
+                            #:subscribe [subscriptions null]
+                            #:join [groups null])
     (unless (memq type draft-socket-types)
       (raise-argument-error 'zmq-draft-socket "draft socket type" type))
     (zmq-socket type
                 #:identity identity
                 #:bind bind-addrs
                 #:connect connect-addrs
-                #:subscribe subscriptions)))
+                #:subscribe subscriptions
+                #:join groups)))

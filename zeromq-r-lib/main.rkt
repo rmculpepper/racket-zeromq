@@ -47,7 +47,7 @@
           [zmq-subscribe
            (->* [zmq-socket?] [] #:rest (listof subscription/c) void?)]
           [zmq-unsubscribe
-           (->* [zmq-socket?] [] #:rest (listof bytes?) void?)]
+           (->* [zmq-socket?] [] #:rest (listof subscription/c) void?)]
           [zmq-send
            (->* [zmq-socket? msg-frame/c] [] #:rest (listof msg-frame/c) void?)]
           [zmq-send*
@@ -280,7 +280,7 @@
   (call-as-atomic
    (lambda ()
      (define ptr (socket-ptr sock))
-     (unless ptr (error who "socket is closed"))
+     (unless ptr (error who "socket is closed\n  socket: ~e" sock))
      (proc ptr))))
 
 (define (errno-lines [errno (saved-errno)])
@@ -306,8 +306,8 @@
                  [(bytes)   (zmq_getsockopt/bytes ptr option)]
                  [(bytes0)  (zmq_getsockopt/bytes ptr option -1)])])
         (unless v
-          (error who "error getting socket option\n  option: ~e~a"
-                 option (errno-lines)))
+          (error who "error getting socket option\n  socket: ~e\n  option: ~e~a"
+                 sock option (errno-lines)))
         v))))
 
 (define (zmq-set-option sock option value
@@ -331,8 +331,8 @@
                  [(uint64) (zmq_setsockopt/uint64 ptr option value)]
                  [(bytes bytes0) (zmq_setsockopt/bytes ptr option value)])])
         (unless (zero? s)
-          (error who "error setting socket option\n  option: ~e\n  value: ~e~a"
-                 option value (errno-lines)))))))
+          (error who "error setting socket option\n  socket: ~e\n  option: ~e\n  value: ~e~a"
+                 sock option value (errno-lines)))))))
 
 (define (zmq-list-options mode)
   (sort (for/list ([opt (in-hash-keys option-table)]
@@ -359,7 +359,8 @@
                      [(bind) (zmq_bind ptr addr)]
                      [(connect) (zmq_connect ptr addr)])])
             (unless (zero? s)
-              (error who "error ~aing socket\n  address: ~e~a" mode addr (errno-lines)))
+              (error who "error ~aing socket\n  socket: ~e\n  address: ~e~a"
+                     mode sock addr (errno-lines)))
             (-add-end! sock ptr mode addr)))))))
 
 (define (zmq-disconnect sock . addrs) (unbind/disconnect 'zmq-disconnect sock addrs 'connect))
@@ -374,9 +375,9 @@
                      [(bind) (zmq_unbind ptr addr)]
                      [(connect) (zmq_disconnect ptr addr)])])
             (unless (zero? s)
-              (error who "error ~a socket\n  address: ~e~a"
+              (error who "error ~a socket\n  socket: ~e\n  address: ~e~a"
                      (case mode [(bind) "unbinding"] [(connect) "disconnecting"])
-                     addr (errno-lines)))
+                     sock addr (errno-lines)))
             (-sub-end! sock ptr mode addr)))))))
 
 (define (-add-end! sock ptr mode addr)
@@ -403,7 +404,7 @@
         (for ([sub (in-list subs)])
           (let ([s (zmq_setsockopt/bytes ptr mode sub)])
             (unless (zero? s)
-              (error who "~a error~a" mode (errno-lines)))))))))
+              (error who "~a error\n  socket: ~e~a" mode sock (errno-lines)))))))))
 
 (define (zmq-join sock . groups)
   (*join 'zmq-join 'join sock (map coerce->bytes groups)))
@@ -418,7 +419,7 @@
         (for ([sub (in-list subs)])
           (let ([s (case mode [(join) (zmq_join ptr sub)] [(leave) (zmq_leave ptr sub)])])
             (unless (zero? s)
-              (error who "~a error~a" mode (errno-lines)))))))))
+              (error who "~a error\n  socket: ~e~a" mode sock (errno-lines)))))))))
 
 ;; ----------------------------------------
 ;; Messages
@@ -540,9 +541,11 @@
            (again-k n frames)]
           [else
            (zmq_msg_close msg)
-           (lambda ()
-             (error who "error sending message\n  frame: ~s of ~s~a"
-                    (add1 n) (+ n (length frames)) (errno-lines)))])))
+           (make-send-error who sock n (+ n (length frames)) (saved-errno))])))
+
+(define ((make-send-error who sock n len errno))
+  (error who "error sending message\n  socket: ~e\n  frame: ~s of ~s~a"
+         sock (add1 n) len (errno-lines errno)))
 
 ;; send-ready-evt is an internal helper evt whose sync result is 'ready
 (struct send-ready-evt (sock)
@@ -619,7 +622,8 @@
   (define frames (zmq-recv* sock #:who who))
   (cond [(and (pair? frames) (null? (cdr frames)))
          (car frames)]
-        [else (error who "received multi-frame message\n  frames: ~s" (length frames))]))
+        [else (error who "received multi-frame message\n  socket: ~e\n  frames: ~s"
+                     sock (length frames))]))
 
 (define (zmq-recv-string sock)
   (define msg (zmq-recv sock #:who 'zmq-recv-string))
@@ -677,7 +681,7 @@
           [(= (saved-errno) EINTR) (-get-more-frames n meta rframes)]
           [(= (saved-errno) EAGAIN) ;; this is not supposed to be possible
            (lambda (who)
-             (error who "internal error: got EAGAIN on frame ~s\n  socket: ~e" sock))]
+             (error who "internal error: got EAGAIN on frame ~s\n  socket: ~e" (add1 n) sock))]
           [else (make-recv-error sock n (saved-errno))]))
   (begin0 (-loop1)
     (zmq_msg_close msg)))

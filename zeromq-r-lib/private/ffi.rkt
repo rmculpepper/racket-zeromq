@@ -404,6 +404,10 @@
 (define (threadsafe-socket-type? x)
   (and (memq x threadsafe-socket-types) #t))
 
+(define (single-frame-socket-type? x)
+  ;; true if the socket type allows only single-frame messages
+  (threadsafe-socket-type? x))
+
 (define-zmq zmq_msg_routing_id
   (_fun _zmq_msg-pointer -> _uint32)
   #:fail (lambda () (lambda (msg) 0)))

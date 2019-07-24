@@ -96,7 +96,7 @@
 (struct socket
   (type                 ;; Symbol (_zmq_socket_type)
    [ptr #:mutable]      ;; _zmq_socket-pointer or #f -- #f means closed
-   wmutex               ;; Mutex -- protects sends
+   wmutex               ;; Mutex or #f -- protects sends, omit if single-frame only socket
    closed-sema          ;; Semaphore -- 0 initially, 1 if closed
    [ends #:mutable]     ;; (Listof Endpoint), where Endpoint = (cons (U 'bind 'connect) String)
    )
@@ -143,7 +143,8 @@
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define sock (socket type ptr (make-mutex) (make-semaphore 0) null))
+  (define wmutex (if (single-frame-socket-type? type) #f (make-mutex)))
+  (define sock (socket type ptr wmutex (make-semaphore 0) null))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -384,9 +385,17 @@
   (zmq-send-message sock (message frames #f) #:who who))
 
 (define (zmq-send-message sock m #:who [who 'zmq-send-message])
-  (call-with-mutex (socket-wmutex sock)
-    (lambda () (send-frames who sock 0 (message-frames m) (message-meta m)))
-    #:on-dead (lambda () (error who "socket is permanently locked for writes\n  socket: ~e" sock))))
+  (define (dead-error) (error who "socket is permanently locked for writes\n  socket: ~e" sock))
+  (cond [(socket-wmutex sock)
+         => (lambda (wmutex)
+              (call-with-mutex wmutex
+                (lambda () (send-frames who sock 0 (message-frames m) (message-meta m)))
+                #:on-dead dead-error))]
+        [(zmq-message/single-frame? m)
+         (send-frames who sock 0 (message-frames m) (message-meta m))]
+        [else
+         (error who "socket does not support multi-frame messages\n  socket: ~e\n  message: ~e"
+                sock m)]))
 
 (define (send-frames who sock n frames meta)
   ((call-with-socket-ptr who sock

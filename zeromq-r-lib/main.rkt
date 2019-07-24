@@ -168,8 +168,7 @@
   ;; On Linux it does not seem to matter.
   (unsafe-fd->evt fd mode #t))
 
-(define (zmq-closed? sock)
-  (call-as-atomic (lambda () (and (socket-ptr sock) #t))))
+(define (zmq-closed? sock) (not (socket-ptr sock)))
 
 (define (zmq-list-endpoints sock mode)
   (ends-get (socket-ends sock) mode))

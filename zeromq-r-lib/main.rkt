@@ -12,6 +12,7 @@
          "private/addr.rkt")
 (provide zmq-socket?
          zmq-message?
+         zmq-message/single-frame?
          (rename-out [zmq-message* zmq-message])
          (contract-out
           [zmq-socket
@@ -60,7 +61,7 @@
           [zmq-message-frames
            (-> zmq-message? (listof bytes?))]
           [zmq-message-frame
-           (-> zmq-message? bytes?)]
+           (-> zmq-message/single-frame? bytes?)]
           [zmq-recv-message
            (-> zmq-socket? zmq-message?)]
           [zmq-send-message
@@ -486,6 +487,9 @@
   (set!-transformer-procedure
    (make-variable-like-transformer #'zmq-message)))
 
+(define (zmq-message/single-frame? m)
+  (match m [(message (list _) _) #t] [_ #f]))
+
 ;; ----------------------------------------
 ;; Send
 
@@ -512,10 +516,13 @@
                 sock m)]))
 
 (define (send-frames who sock n frames meta)
+  (define ((again-k n frames))
+    (sync (send-ready-evt sock))
+    (send-frames who sock n frames meta))
   ((call-with-socket-ptr who sock
-     (lambda (ptr) (-send-frames-k who sock ptr n frames meta)))))
+     (lambda (ptr) (-send-frames-k who sock ptr n frames meta again-k)))))
 
-(define (-send-frames-k who sock ptr n frames meta)
+(define (-send-frames-k who sock ptr n frames meta again-k)
   (define msg (new-zmq_msg))
   (let -loop ([n n] [frames frames]) ;; PRE: msg is uninitialized
     (define last? (null? (cdr frames)))
@@ -530,9 +537,7 @@
            (-loop n frames)]
           [(= (saved-errno) EAGAIN)
            (zmq_msg_close msg)
-           (lambda ()
-             (sync (send-ready-evt sock))
-             (send-frames who sock n frames meta))]
+           (again-k n frames)]
           [else
            (zmq_msg_close msg)
            (lambda ()
@@ -572,6 +577,40 @@
          (zmq_msg_set_group msg meta)]
         [else (void)])
   (void))
+
+;; ----------------------------------------
+;; Atomic send evt
+
+;; Restricted to the following combinations:
+;; - the socket type must accept only single-frame messages (and thus not have write mutex)
+;;   (FIXME: could restrict sockets at Racket level to single frames)
+;; - the message must have a single frame
+(define (zmq-send-evt sock m)
+  (when (standard-socket? sock)
+    (error 'zmq-send-evt "socket allows multi-frame messages\n  socket: ~e" sock))
+  (match-define (message (list frame) meta) m)
+  (wrap-evt (atomic-send-evt sock frame meta) (lambda (r) (begin (r) (void)))))
+
+(struct atomic-send-evt (sock frame meta) ;; <: (evt-of (-> any))
+  #:property prop:evt
+  (unsafe-poller
+   (lambda (self wakeups)
+     (match-define (atomic-send-evt sock frame meta) self)
+     (define ptr (socket-ptr sock))
+     (define (ready v) (values (list v) #f))
+     (define (cancel-sleep) (ready void))
+     (define (not-ready) (values #f self))
+     (-inst-check-wakeup (socket-inst sock) wakeups)
+     (cond [(not ptr) (not-ready)]
+           [(-ready? ptr ZMQ_POLLOUT)
+            (cond [wakeups (cancel-sleep)]
+                  [(-try-atomic-send sock ptr frame meta) (ready void)]
+                  [else (not-ready)])]
+           [wakeups (-wait/wakeups self sock ptr ZMQ_POLLOUT wakeups)]
+           [else (not-ready)]))))
+
+(define (-try-atomic-send sock ptr frame meta)
+  (-send-frames-k 'zmq-send-evt sock ptr 0 (list frame) meta (lambda (n frames) #f)))
 
 ;; ----------------------------------------
 ;; Recv
@@ -686,6 +725,8 @@
            #:connect (or/c connect-addr/c (listof connect-addr/c))
            #:join (or/c subscription/c (listof subscription/c))]
           zmq-socket?)]
+    [zmq-send-evt
+     (-> zmq-socket? zmq-message/single-frame? evt?)]
     [zmq-join
      (-> zmq-socket? bytes? void?)]
     [zmq-leave

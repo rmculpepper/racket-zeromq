@@ -22,6 +22,8 @@
            (-> zmq-socket? void?)]
           [zmq-closed?
            (-> zmq-socket? boolean?)]
+          [zmq-closed-evt
+           (-> zmq-socket? evt?)]
           [zmq-list-endpoints
            (-> zmq-socket? (or/c 'bind 'connect) (listof string?))]
           [zmq-get-option
@@ -93,6 +95,7 @@
   (type                 ;; Symbol (_zmq_socket_type)
    [ptr #:mutable]      ;; _zmq_socket-pointer or #f -- #f means closed
    wmutex               ;; Mutex -- protects sends
+   closed-sema          ;; Semaphore -- 0 initially, 1 if closed
    [ends #:mutable]     ;; (Listof Endpoint), where Endpoint = (cons (U 'bind 'connect) String)
    )
   ;; Like a channel, a zmq-socket acts as an evt. It is ready for sync when a
@@ -138,7 +141,7 @@
   (unless ptr
     (end-atomic)
     (error 'zmq-socket "could not create socket\n  type: ~e~a" type (errno-lines)))
-  (define sock (socket type ptr (make-mutex) null))
+  (define sock (socket type ptr (make-mutex) (make-semaphore 0) null))
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -166,7 +169,8 @@
       (fd->evt fd 'remove)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
-          (log-zmq-error "error closing socket~a" (errno-lines)))))))
+          (log-zmq-error "error closing socket~a" (errno-lines))))
+      (semaphore-post (socket-closed-sema sock)))))
 
 (define (fd->evt fd mode)
   ;; The fd *must* be interpreted as a socket on Windows and Mac OS.
@@ -180,6 +184,9 @@
 
 (define (ends-get ends type)
   (for/list ([c (in-list ends)] #:when (eq? (car c) type)) (cdr c)))
+
+(define (zmq-closed-evt sock)
+  (semaphore-peek-evt (socket-closed-sema sock)))
 
 ;; ----------------------------------------
 ;; Helpers

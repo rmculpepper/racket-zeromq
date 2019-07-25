@@ -110,20 +110,52 @@
            req_relaxed = 53
            conflate = 54
            zap_domain = 55
+           ;; support added in v1.1
+           router_handover = 56
+           tos = 57
+           connect_routing_id = 61
+           gssapi_server = 62
+           gssapi_principal = 63
+           gssapi_service_principal = 64
+           gssapi_plaintext = 65
+           handshake_ivl = 66
+           socks_proxy = 68
+           xpub_nodrop = 69
+           blocky = 70
+           xpub_manual = 71
+           xpub_welcome_msg = 72
+           stream_notify = 73
+           invert_matching = 74
+           heartbeat_ivl = 75
+           heartbeat_ttl = 76
+           heartbeat_timeout = 77
+           xpub_verboser = 78
+           connect_timeout = 79
+           tcp_maxrt = 80
+           thread_safe = 81
+           multicast_maxtpdu = 84
+           vmci_buffer_size = 85
+           vmci_buffer_min_size = 86
+           vmci_buffer_max_size = 87
+           vmci_connect_timeout = 88
+           use_fd = 89
+           gssapi_principal_nametype = 90
+           gssapi_service_principal_nametype = 91
+           bindtodevice = 92
            )
          _int))
 
 (define option-table
-  '#hasheq(;; r = can read, w = can write, x = don't allow client to write (unsafe)
-           [affinity .        (- x uint64)]
+  '#hasheq(;; r = can read, w = can write, x = don't allow client to read/write (unsafe)
+           [affinity .        (r x uint64)]
            [backlog .         (r w int)]
            [conflate .        (- x int)]
            [curve_publickey . (r w bytes)]
            [curve_secretkey . (r w bytes)]
            [curve_server .    (r w int)]
            [curve_serverkey . (r w bytes)]
-           [events .          (- - int)]
-           [fd .              (- - int)]
+           [events .          (x - int)]
+           [fd .              (x - int)]
            [identity .        (r w bytes)]
            [immediate .       (r w int)] ;; ??
            [ipv6 .            (r w int)]
@@ -131,7 +163,7 @@
            [linger .          (r w int)] ;; ??
            [maxmsgsize .      (r w int64)]
            [mechanism .       (r - int)]
-           [multicast_hops .  (r - int)]
+           [multicast_hops .  (r w int)]
            [plain_password .  (r w bytes0)]
            [plain_server .    (r w int)]
            [plain_username .  (r w bytes0)]
@@ -160,7 +192,39 @@
            [type .            (r - int)]
            [unsubscribe .     (- x bytes)]
            [xpub_verbose .    (r w int)]
-           [zap_domain .      (r w bytes0)]))
+           [zap_domain .      (r w bytes0)]
+           ;; support added in v1.1:
+           [router_handover   . (- w int)]
+           [tos               . (r w int)]
+           [connect_routing_id . (- w bytes)]
+           [gssapi_server     . (r w int)]
+           [gssapi_principal  . (r w bytes0)]
+           [gssapi_service_principal . (r w bytes0)]
+           [gssapi_plaintext  . (r w int)]
+           [handshake_ivl     . (r w int)]
+           [socks_proxy       . (r w bytes0)]
+           [xpub_nodrop       . (- w int)]
+           [xpub_manual       . (- w int)]
+           [xpub_welcome_msg  . (- w bytes)]
+           [stream_notify     . (- w int)]
+           [invert_matching   . (r w int)]
+           [heartbeat_ivl     . (- w int)]
+           [heartbeat_ttl     . (- w int)]
+           [heartbeat_timeout . (- w int)]
+           [xpub_verboser     . (- w int)]
+           [connect_timeout   . (r w int)]
+           [tcp_maxrt         . (r w int)]
+           [thread_safe       . (r - int)]
+           [multicast_maxtpdu . (r w int)]
+           [vmci_buffer_size  . (r w uint64)]
+           [vmci_buffer_min_size . (r w uint64)]
+           [vmci_buffer_max_size . (r w uint64)]
+           [vmci_connect_timeout . (r w int)]
+           [use_fd            . (x x int)]
+           [gssapi_principal_nametype . (r w int)]
+           [gssapi_service_principal_nametype . (r w int)]
+           [bindtodevice      . (r w bytes)]
+           ))
 
 (define ZMQ_POLLIN  1)
 (define ZMQ_POLLOUT 2)

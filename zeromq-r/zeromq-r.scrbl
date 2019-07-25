@@ -1,17 +1,31 @@
 #lang scribble/manual
-@(require scribble/manual
+@(require racket/runtime-path
+          scribble/manual
           scribble/basic
           scribble/example
-          (for-label racket racket/contract racket/format setup/dirs zeromq zeromq/unsafe))
+          (for-label racket racket/match racket/contract racket/format
+                     setup/dirs zeromq zeromq/unsafe))
 
 @title{ZeroMQ: Distributed Messaging}
 @author[@author+email["Ryan Culpepper" "ryanc@racket-lang.org"]]
 
 @(define(zmqlink url-suffix . pre-flow)
-   (apply hyperlink (format "http://api.zeromq.org/4-2:~a" url-suffix) pre-flow))
+   (apply hyperlink (format "http://api.zeromq.org/master:~a" url-suffix) pre-flow))
 
 @(define(zglink url-suffix . pre-flow)
    (apply hyperlink (format "http://zguide.zeromq.org/~a" url-suffix) pre-flow))
+
+@(define EVT
+   @elem{@tech[#:doc '(lib "scribblings/reference/reference.scrbl")]{synchronizable event}
+         (@racket[evt?])})
+
+@(begin
+  (define-runtime-path log-file "private/log-for-zeromq.rktd")
+  (define the-eval (make-log-based-eval log-file 'replay))
+  (the-eval '(require racket/match racket/format zeromq))
+  ;; Silence threads stopped by break-thread (kill-thread doesn't work)
+  (the-eval '(uncaught-exception-handler
+              (lambda _ (abort-current-continuation (default-continuation-prompt-tag) void)))))
 
 This library provides bindings to the
 @hyperlink["http://zeromq.org"]{ZeroMQ} (or ``@as-index{0MQ}'', or
@@ -39,34 +53,41 @@ Receive}, which illustrates REP-REQ communication.
 
 Here is the ``hello world'' server:
 
-@racketblock[
-(define responder (zmq-socket 'rep))
-(zmq-bind responder "tcp://*:5555")
-(let loop ()
-  (define msg (zmq-recv-string responder))
-  (printf "Server received: ~s\n" msg)
-  (zmq-send responder "World")
-  (loop))
+@examples[#:eval the-eval #:label #f
+(define responder-thread
+  (thread
+    (lambda ()
+      (define responder (zmq-socket 'rep))
+      (zmq-bind responder "tcp://*:5555")
+      (let loop ()
+        (define msg (zmq-recv-string responder))
+        (printf "Server received: ~s\n" msg)
+        (zmq-send responder "World")
+        (loop)))))
 ]
 
-The first two lines of the server could also be combined into one, as follows:
+The @racket[responder] socket could have been created and connected to
+its address in one call, as follows:
 @racketblock[
 (define responder (zmq-socket 'rep #:bind "tcp://*:5555"))
 ]
 
 Here is the ``hello world'' client:
 
-@racketblock[
+@examples[#:eval the-eval #:label #f
 (define requester (zmq-socket 'req #:connect "tcp://localhost:5555"))
-(for ([request-number (in-range 10)])
-  (printf "Client sending Hello #~s\n" request-number)
+(for ([request-number (in-range 3)])
   (zmq-send requester "Hello")
   (define response (zmq-recv-string requester))
   (printf "Client received ~s (#~s)\n" response request-number))
 (zmq-close requester)
 ]
 
-@subsection[#:tag "..."]{Weather Reporting in ZeroMQ}
+@examples[#:eval the-eval #:hidden
+(break-thread responder-thread)
+]
+
+@subsection[#:tag "weather"]{Weather Reporting in ZeroMQ}
 
 This example is adapted from
 @zglink["page:all#Getting-the-Message-Out"]{Getting the Message Out},
@@ -74,42 +95,155 @@ which illustrates PUB-SUB communication.
 
 Here's the weather update server:
 
-@racketblock[
-(define publisher (zmq-socket 'pub #:bind "tcp://*:5556"))
-(let loop ()
-  (define zip (~r (random #e1e5) #:precision 5 #:pad-string "0"))
-  (define temp (- (random 215) 80))
-  (define rhumid (+ (random 50) 10))
-  (zmq-send publisher (format "~a ~a ~a" zip temp rhumid))
-  (loop))
+@examples[#:eval the-eval #:label #f
+(define (zip->string zip) (~r zip #:precision 5 #:pad-string "0"))
+(eval:alts (define (random-zip) (random #e1e5))
+           (define (random-zip) 10001)) ;; use loaded dice for faster doc build
+(define publisher-thread
+  (thread
+    (lambda ()
+      (define publisher (zmq-socket 'pub #:bind "tcp://*:5556"))
+      (let loop ()
+        (define zip (zip->string (random-zip)))
+        (define temp (- (random 215) 80))
+        (define rhumid (+ (random 50) 10))
+        (zmq-send publisher (format "~a ~a ~a" zip temp rhumid))
+        (loop)))))
 ]
 
 Here is the weather client:
 
-@racketblock[
+@examples[#:eval the-eval #:label #f
 (define subscriber (zmq-socket 'sub #:connect "tcp://localhost:5556"))
-(define myzip (~r (random #e1e5) #:precision 5 #:pad-string "0"))
+(define myzip (zip->string (random-zip)))
 (printf "Subscribing to ZIP code ~a only\n" myzip)
-(zmq-subscribe subscriber (format "~a " myzip))
+(zmq-subscribe subscriber myzip)
 (define total-temp
-  (for/sum ([update-number (in-range 100)])
+  (for/sum ([update-number (in-range 10)])
     (define msg (zmq-recv-string subscriber))
     (define temp (let ([in (open-input-string msg)]) (read in) (read in)))
     (printf "Client got temperature update #~s: ~s\n" update-number temp)
     temp))
 (printf "Average temperature for ZIP code ~s was ~s\n"
-        myzip (~r (/ total-temp 100)))
+        myzip (~r (/ total-temp 10)))
 (zmq-close subscriber)
 ]
 
+@examples[#:eval the-eval #:hidden
+(break-thread publisher-thread)
+]
+
+
+@subsection[#:tag "divide-and-conquer"]{Divide and Conquer in ZeroMQ}
+
+This example is adapted from
+@zglink["page:all#Divide-and-Conquer"]{Divide and Conquer},
+which illustrates PUSH-PULL communication.
+
+Here's the ventilator:
+
+@examples[#:eval the-eval #:label #f
+(code:comment "Task ventilator")
+(code:comment "Binds PUSH socket to tcp://localhost:5557")
+(code:comment "Sends batch of tasks to workers via that socket")
+(define (ventilator go-sema)
+  (define sender (zmq-socket 'push #:bind "tcp://*:5557"))
+  (define sink (zmq-socket 'push #:connect "tcp://localhost:5558"))
+  (semaphore-wait go-sema)
+  (zmq-send sink "0") (code:comment "message 0 signals start of batch")
+  (define total-msec
+    (for/fold ([total 0]) ([task-number (in-range 100)])
+      (define workload (add1 (random 100)))
+      (zmq-send sender (format "~s" workload))
+      (+ total workload)))
+  (printf "Total expected cost: ~s msec\n" total-msec)
+  (zmq-close sender)
+  (zmq-close sink))
+]
+
+Here are the workers:
+
+@examples[#:eval the-eval #:label #f
+(code:comment "Task worker")
+(code:comment "Connects PULL socket to tcp://localhost:5557")
+(code:comment "Collects workloads from ventilator via that socket")
+(code:comment "Connects PUSH socket to tcp://localhost:5558")
+(code:comment "Sends results to sink via that socket")
+(define (worker)
+  (define receiver (zmq-socket 'pull #:connect "tcp://localhost:5557"))
+  (define sender (zmq-socket 'push #:connect "tcp://localhost:5558"))
+  (let loop ()
+    (define s (zmq-recv-string receiver))
+    (sleep (/ (read (open-input-string s)) 1000)) (code:comment "do the work")
+    (zmq-send sender "")
+    (loop)))
+]
+
+Here is the sink:
+
+@examples[#:eval the-eval #:label #f
+(code:comment "Task sink")
+(code:comment "Binds PULL socket to tcp://localhost:5558")
+(code:comment "Collects results from workers via that socket")
+(define (sink)
+  (define receiver (zmq-socket 'pull #:bind "tcp://*:5558"))
+  (void (zmq-recv receiver)) (code:comment "start of batch")
+  (time (for ([task-number (in-range 100)])
+          (void (zmq-recv receiver))))
+  (zmq-close receiver))
+]
+
+Now we create a sink thread, a ventilator thread, and 10 worker
+threads. We give them a little time to connect to each other, then we
+start the task ventilator and wait for the sink to collect the
+results.
+
+@examples[#:eval the-eval #:label #f
+(let ()
+  (define go-sema (make-semaphore 0))
+  (define sink-thread (thread sink))
+  (define ventilator-thread (thread (lambda () (ventilator go-sema))))
+  (define worker-threads (for/list ([i 10]) (thread worker)))
+  (code:comment "Give the threads some time to connect...")
+  (begin (sleep 1) (semaphore-post go-sema))
+  (void (sync sink-thread)))
+]
+
+Note that to achieve the desired parallel speedup here, it's important
+to give all of the worker threads time to connect their receiver
+sockets---the @racket[(sleep 1)] is a blunt way of doing
+this. Otherwise, the first thread to connect might end up doing all of
+the work---an example of the ``slow joiner'' problem (see the end of
+@zglink["page:all#Divide-and-Conquer"]{Divide and Conquer} for more
+details).
+
 
 @; ----------------------------------------
-@section[#:tag "api"]{ZeroMQ Functions}
+@section[#:tag "api"]{ZeroMQ API}
 
-@defproc[(zmq-socket? [v any/c]) boolean?]{
+@defproc[(zmq-available?) boolean?]{
 
-Returns @racket[#t] if @racket[v] is a ZeroMQ socket, @racket[#f] otherwise.
+Returns @racket[#t] if the ZeroMQ library (@tt{libzmq}) was loaded successfully,
+@racket[#f] otherwise. If the result is @racket[#f], calling
+@racket[zmq-socket] will raise an exception. See @secref["deps"].
+
+@history[#:added "1.1"]
 }
+
+@defproc[(zmq-version)
+         (or/c (list/c exact-nonnegative-integer?
+                       exact-nonnegative-integer?
+                       exact-nonnegative-integer?)
+               #f)]{
+
+Returns the version of the ZeroMQ library (@tt{libzmq}) if it was
+loaded successfully, @racket[#f] otherwise. The version is represented
+by a list of three integers---for example, @racket['(4 3 2)].
+
+@history[#:added "1.1"]
+}
+
+@subsection[#:tag "socket-api"]{Managing ZeroMQ Sockets}
 
 @defproc[(zmq-socket [type (or/c 'pair 'pub 'sub 'req 'rep 'dealer 'router
                                  'pull 'push 'xpub 'xsub 'stream)]
@@ -127,10 +261,22 @@ See the @zmqlink["zmq-socket"]{zmq_socket} documentation for brief
 descriptions of the different @racket[type]s of sockets, and see the
 @zglink["page:all"]{0MQ Guide} for more detailed explanations.
 
+A ZeroMQ socket acts as a @EVT that is ready when
+@racket[zmq-recv-message] would receive a message without blocking;
+the synchronization result is the received message
+(@racket[zmq-message?]). If the socket is closed, it is never ready
+for synchronization; use @racket[zmq-closed-evt] to detect closed
+sockets.
+
 Unlike @tt{libzmq}, @racket[zmq-socket] creates sockets with a short
 default ``linger'' period (@tt{ZMQ_LINGER}), to avoid blocking the
 Racket VM when the underlying context is shut down. The linger period
 can be changed with @racket[zmq-set-option].
+}
+
+@defproc[(zmq-socket? [v any/c]) boolean?]{
+
+Returns @racket[#t] if @racket[v] is a ZeroMQ socket, @racket[#f] otherwise.
 }
 
 @defproc[(zmq-close [s zmq-socket?]) void?]{
@@ -143,6 +289,12 @@ already-closed socket.
 @defproc[(zmq-closed? [s zmq-socket?]) boolean?]{
 
 Returns @racket[#t] if the socket is closed, @racket[#f] otherwise.
+}
+
+@defproc[(zmq-closed-evt [s zmq-socket?]) evt?]{
+
+Returns a @EVT that is ready for synchronization when @racket[(zmq-closed?
+s)] would return @racket[#t]. The synchronization result is the event itself.
 }
 
 @defproc[(zmq-list-endpoints [s zmq-socket?] [mode (or/c 'bind 'connect)])
@@ -228,6 +380,60 @@ A @racket[topic] matches a message if @racket[topic] is a prefix of
 the message. The empty topic accepts all messages.
 }
 
+@; ----------------------------------------
+@subsection[#:tag "message-api"]{Sending and Receiving ZeroMQ Messages}
+
+A @deftech{ZeroMQ message} consists of one or more @emph{frames}
+(represented by byte strings). The procedures in this library support
+sending and receiving only complete messages (as opposed to the
+frame-at-a-time operations in the @tt{libzmq} C library).
+
+@defproc[(zmq-message? [v any/c]) boolean?]{
+
+Returns @racket[#t] if @racket[v] is a ZeroMQ message value, @racket[#f]
+otherwise.
+}
+
+@defproc[#:kind "procedure & match pattern"
+         (zmq-message [frames (or/c bytes? string? (listof (or/c bytes? string?)))])
+          zmq-message?]{
+
+Returns a ZeroMQ message value consisting of the given @racket[frames]. Strings
+are automatically coerced to bytestrings using @racket[string->bytes/utf-8],
+and if a single string or bytestring is given, it is converted to a
+singleton list.
+
+When used a @racket[match] pattern, the @racket[frames] subpattern is always
+matched against a list of bytestrings.
+
+@examples[#:eval the-eval
+(define msg (zmq-message "hello world"))
+(match msg [(zmq-message frames) frames])
+]
+
+In @tt{libzmq} version 4.3.2, the draft (unstable) API has additional
+operations on messages to support the draft socket types; for example, a
+message used with a CLIENT or SERVER socket has a @emph{routing-id}
+field. Support will be added to @racket[zmq-message] when the corresponding
+draft APIs become stable.
+
+@history[#:added "1.1"]
+}
+
+@defproc[(zmq-send-message [s zmq-socket] [msg zmq-message?]) void?]{
+
+Sends the message @racket[msg] on socket @racket[s].
+
+@history[#:added "1.1"]
+}
+
+@defproc[(zmq-recv-message [s zmq-socket?]) zmq-message?]{
+
+Receives a message from socket @racket[s].
+
+@history[#:added "1.1"]
+}
+
 @defproc[(zmq-send  [s zmq-socket?] [msg-frame (or/c bytes? string?)] ...+) void?]{
 
 Sends a message on socket @racket[s]. The message has as many frames
@@ -258,7 +464,31 @@ Receives a message from the socket @racket[s]. The message is
 represented as a list of byte strings, one for each frame.
 }
 
-@section[#:tag "unafe"]{ZeroMQ Unsafe Functions}
+@defproc[(zmq-proxy [sock1 zmq-socket?]
+                    [sock2 zmq-socket?]
+                    [#:capture capture (-> zmq-socket? zmq-message? any) void]
+                    [#:other-evt other-evt evt? never-evt])
+         any]{
+
+Runs a proxy connecting @racket[sock1] and @racket[sock2]; a loop
+reads a message from either socket and sends it to the other. For each
+message received, the @racket[capture] procedure is called on the
+receiving socket and the received message, and then the message is
+forwarded to the other socket.
+
+This procedure returns only when the proxy is finished, either because
+one of the sockets is closed---in which case @racket[(void)] is
+returned---or because @racket[other-evt] became ready for
+synchronization---in which case @racket[other-evt]'s synchronization
+result is returned. The procedure might also raise an exception due to
+a failed send or receive or if @racket[capture] or @racket[other-evt]
+raise an exception.
+
+@history[#:added "1.1"]
+}
+
+@; ============================================================
+@section[#:tag "unsafe"]{ZeroMQ Unsafe Functions}
 
 The functions provided by this module are @emph{unsafe}.
 
@@ -299,3 +529,10 @@ instaled in @tt{/opt/local/lib}, which is @emph{not} in the operating
 system's default search path. Manually copy or link the library into
 one of the directories returned by @racket[(get-lib-search-dirs)].}
 ]
+
+On Windows, @tt{libzmq.dll} is required. Installers can be downloaded
+at @url{http://zeromq.org/area:download}.
+
+@;{ @url{http://zeromq.org/distro:microsoft-windows}. }
+
+@(close-eval the-eval)

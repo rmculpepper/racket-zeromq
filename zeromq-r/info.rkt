@@ -18,4 +18,4 @@
 ;; collect info
 
 (define name "zeromq")
-(define scribblings '(["zeromq.scrbl" ()]))
+(define scribblings '(["zeromq-r.scrbl" ()]))

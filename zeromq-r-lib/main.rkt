@@ -715,6 +715,12 @@
 
 ;; ============================================================
 
+;; Don't require this; it exists only for testing.
+(module* private-logger #f
+  (provide zmq-logger))
+
+;; ============================================================
+
 ;; WARNING: The following module is for testing support for the libzmq DRAFT
 ;; socket types and APIs. It *will* disappear in the future without notice.
 (module* unstable-draft-4.3.2 #f

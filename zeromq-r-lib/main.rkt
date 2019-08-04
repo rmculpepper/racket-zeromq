@@ -251,8 +251,7 @@
 (define (-close who sock)
   (let ([ptr (socket-ptr sock)])
     (when ptr
-      (log-zmq-debug "closing socket (~a)"
-                     (cast (zmq_getsockopt/int ptr 'type) _int _zmq_socket_type))
+      (log-zmq-debug "closing socket: ~e" sock)
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
       (-inst-remove-sockptr (socket-inst sock) ptr)

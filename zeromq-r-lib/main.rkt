@@ -65,7 +65,12 @@
           [zmq-recv-message
            (-> zmq-socket? zmq-message?)]
           [zmq-send-message
-           (-> zmq-socket? zmq-message? void?)]))
+           (-> zmq-socket? zmq-message? void?)]
+          [zmq-proxy
+           (->* [zmq-socket? zmq-socket?]
+                [#:capture (-> zmq-socket? zmq-message? any)
+                 #:other-evt evt?]
+                any)]))
 
 (define socket-type/c
   (or/c 'pair 'pub 'sub 'req 'rep 'dealer 'router 'pull 'push 'xpub 'xsub 'stream))
@@ -701,6 +706,25 @@
   (cond [(not (zero? routing-id)) routing-id]
         [group group]
         [else #f]))
+
+;; ============================================================
+;; Proxy
+
+(define (zmq-proxy sock1 sock2
+                   #:capture [capture #f]
+                   #:other-evt [other-evt never-evt])
+  (define sock1-closed-evt (wrap-evt (zmq-closed-evt sock1) void))
+  (define sock2-closed-evt (wrap-evt (zmq-closed-evt sock2) void))
+  (let loop ()
+    (define ((forward from-sock to-sock) m)
+      (when capture (capture from-sock m))
+      (zmq-send-message to-sock m)
+      (loop))
+    (sync (handle-evt sock1 (forward sock1 sock2))
+          (handle-evt sock2 (forward sock2 sock1))
+          sock1-closed-evt
+          sock2-closed-evt
+          other-evt)))
 
 ;; ============================================================
 

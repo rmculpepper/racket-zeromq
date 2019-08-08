@@ -262,6 +262,41 @@
 (define-zmq zmq_strerror
   (_fun _int -> _string))
 
+(define-zmq zmq_has
+  (_fun _string/utf-8 -> _bool)
+  #:fail (lambda () (lambda (s) #f)))
+
+(define-zmq zmq_curve_keypair
+  (_fun* (pubkey : _bytes = (make-bytes 41))
+         (privkey : _bytes = (make-bytes 41))
+         -> (s : _int) -> (and (zero? s) (list pubkey privkey)))
+  #:fail (lambda () (lambda () #f)))
+
+(define-zmq zmq_curve_public
+  (_fun* (pubkey : _bytes = (make-bytes 41)) (privkey : _bytes)
+         -> (s : _int) -> (and (zero? s) pubkey)))
+
+(define-zmq zmq_z85_decode
+  (_fun* (in) ::
+         (out : _bytes = (let ([inlen (bytes-length in)])
+                           (cond [(= (remainder inlen 5) 0)
+                                  (make-bytes (* 4/5 (bytes-length in)))]
+                                 [(and (= (remainder inlen 5) 1)
+                                       (= (bytes-ref in (sub1 inlen)) 0))
+                                  (make-bytes (* 4/5 (sub1 (bytes-length in))))]
+                                 [else
+                                  (error 'zmq_z85_decode "bad input: ~e" in)])))
+         (in : _bytes)
+         -> (s : _pointer) -> (and s out)))
+
+(define-zmq zmq_z85_encode
+  (_fun* (in) ::
+         (out : _bytes = (make-bytes (add1 (ceiling (* 5/4 (bytes-length in))))))
+         (in : _bytes)
+         (inlen : _size = (bytes-length in))
+         -> (s : _pointer) -> (and s out)))
+
+
 ;; ----------------------------------------
 ;; Contexts
 
@@ -472,3 +507,68 @@
   (> (zmq_poller_wait_all poller a 1 0) 0))
 
 (define poller-available? (and zmq_poller_new zmq_poller_fd #t))
+
+;; ============================================================
+;; Socket monitor
+
+(define _zmq_socket_events
+  (_bitmask '(
+              connected       = #x0001
+              connect_delayed = #x0002
+              connect_retried = #x0004
+              listening       = #x0008
+              bind_failed     = #x0010
+              accepted        = #x0020
+              accept_failed   = #x0040
+              closed          = #x0080
+              close_failed    = #x0100
+              disconnected    = #x0200
+              monitor_stopped = #x0400
+              all             = #xffff
+              ;; Unspecified system errors during handshake. Event value is an errno.
+              handshake_failed_no_detail = #x0800
+              ;; Handshake complete successfully with successful authentication (if
+              ;; enabled). Event value is unused.
+              handshake_succeeded = #x1000
+              ;; Protocol errors between ZMTP peers or between server and ZAP handler.
+              ;; Event value is one of ZMQ_PROTOCOL_ERROR_*
+              handshake_failed_protocol = #x2000
+              ;; Failed authentication requests. Event value is the numeric ZAP status
+              ;; code, i.e. 300, 400 or 500.
+              handshake_failed_auth = #x4000
+              )
+            _int))
+
+(define _zmq_protocol_error
+  (_enum '(
+           zmtp_unspecified                   = #x10000000
+           zmtp_unexpected_command            = #x10000001
+           zmtp_invalid_sequence              = #x10000002
+           zmtp_key_exchange                  = #x10000003
+           zmtp_malformed_command_unspecified = #x10000011
+           zmtp_malformed_command_message     = #x10000012
+           zmtp_malformed_command_hello       = #x10000013
+           zmtp_malformed_command_initiate    = #x10000014
+           zmtp_malformed_command_error       = #x10000015
+           zmtp_malformed_command_ready       = #x10000016
+           zmtp_malformed_command_welcome     = #x10000017
+           zmtp_invalid_metadata              = #x10000018
+           zmtp_cryptographic                 = #x11000001
+           zmtp_mechanism_mismatch            = #x11000002
+           zap_unspecified                    = #x20000000
+           zap_malformed_reply                = #x20000001
+           zap_bad_request_id                 = #x20000002
+           zap_bad_version                    = #x20000003
+           zap_invalid_status_code            = #x20000004
+           zap_invalid_metadata               = #x20000005
+           )
+         _int))
+
+(define (decode-socket-events se)
+  (cast se _int _zmq_socket_events))
+
+(define (decode-protocol-error pe)
+  (cast pe _int _zmq_protocol_error))
+
+(define-zmq zmq_socket_monitor
+  (_fun* _zmq_socket-pointer _string _zmq_socket_events -> _int))

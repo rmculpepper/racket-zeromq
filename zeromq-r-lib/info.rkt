@@ -5,7 +5,7 @@
 
 (define collection "zeromq")
 (define deps
-  '(["base" #:version "7.2.0.6"]
+  '(["base" #:version "7.0"]
     ["zeromq-x86_64-linux-natipkg" #:platform "x86_64-linux-natipkg"]))
 
 ;; ========================================

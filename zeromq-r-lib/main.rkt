@@ -13,6 +13,8 @@
 (provide zmq-socket?
          zmq-message?
          zmq-message/single-frame?
+         zmq-available?
+         zmq-version
          (rename-out [zmq-message* zmq-message])
          (contract-out
           [zmq-socket
@@ -84,6 +86,9 @@
 (define DEFAULT-LINGER 100)
 
 (define-logger zmq)
+
+(define (zmq-available?) (and zmq-lib #t))
+(define (zmq-version) (zmq_version))
 
 ;; ============================================================
 ;; Context

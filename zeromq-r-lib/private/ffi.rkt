@@ -252,7 +252,8 @@
         (minor : (_ptr o _int))
         (patch : (_ptr o _int))
         -> _void
-        -> (list major minor patch)))
+        -> (list major minor patch))
+  #:fail (lambda () (lambda () #f)))
 
 (define (zmq-version-string)
   (define v (zmq_version))

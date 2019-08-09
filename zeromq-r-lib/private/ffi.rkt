@@ -22,7 +22,7 @@
                    (lambda (x)
                      (set! zmq-load-fail-reason (exn-message x))
                      #f)])
-    (ffi-lib "libzmq" '(#f "5"))))
+    (ffi-lib "libzmq" '("5" #f))))
 
 (define-ffi-definer define-zmq zmq-lib
   #:default-make-fail make-not-available)

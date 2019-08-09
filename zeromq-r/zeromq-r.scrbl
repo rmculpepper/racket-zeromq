@@ -530,9 +530,7 @@ system's default search path. Manually copy or link the library into
 one of the directories returned by @racket[(get-lib-search-dirs)].}
 ]
 
-On Windows, @tt{libzmq.dll} is required. Installers can be downloaded
-at @url{http://zeromq.org/area:download}.
-
-@;{ @url{http://zeromq.org/distro:microsoft-windows}. }
+On Windows, @tt{libzmq.dll} is required; it is automatically provided
+by the @tt{zeromq-win32-{i386,x86_64}} package.
 
 @(close-eval the-eval)

@@ -27,7 +27,17 @@
 (define-ffi-definer define-zmq zmq-lib
   #:default-make-fail make-not-available)
 
-(define-syntax-rule (_fun* part ...) (_fun #:save-errno 'posix part ...))
+(define-zmq zmq_errno (_fun -> _int) #:fail (lambda () (lambda () 0)))
+
+(define zerrno? (case (system-type 'os) [(windows) #t] [else #f]))
+(define ((errno-wrapper f) . args)
+  (begin (saved-errno 0) (begin0 (apply f args) (saved-errno (zmq_errno)))))
+
+(define-syntax-rule (define-zmq* name type opt ...)
+  (define-zmq name type opt ... #:wrap (if zerrno? errno-wrapper values)))
+
+(define-syntax-rule (_fun* part ...)
+  (_fun #:save-errno (if zerrno? #f 'posix) part ...))
 
 ;; ----------------------------------------
 ;; Types
@@ -266,17 +276,17 @@
   (_fun _string/utf-8 -> _bool)
   #:fail (lambda () (lambda (s) #f)))
 
-(define-zmq zmq_curve_keypair
+(define-zmq* zmq_curve_keypair
   (_fun* (pubkey : _bytes = (make-bytes 41))
          (privkey : _bytes = (make-bytes 41))
          -> (s : _int) -> (and (zero? s) (list pubkey privkey)))
   #:fail (lambda () (lambda () #f)))
 
-(define-zmq zmq_curve_public
+(define-zmq* zmq_curve_public
   (_fun* (pubkey : _bytes = (make-bytes 41)) (privkey : _bytes)
          -> (s : _int) -> (and (zero? s) pubkey)))
 
-(define-zmq zmq_z85_decode
+(define-zmq* zmq_z85_decode
   (_fun* (in) ::
          (out : _bytes = (let ([inlen (bytes-length in)])
                            (cond [(= (remainder inlen 5) 0)
@@ -289,7 +299,7 @@
          (in : _bytes)
          -> (s : _pointer) -> (and s out)))
 
-(define-zmq zmq_z85_encode
+(define-zmq* zmq_z85_encode
   (_fun* (in) ::
          (out : _bytes = (make-bytes (add1 (ceiling (* 5/4 (bytes-length in))))))
          (in : _bytes)
@@ -300,31 +310,31 @@
 ;; ----------------------------------------
 ;; Contexts
 
-(define-zmq zmq_ctx_new
+(define-zmq* zmq_ctx_new
   (_fun* -> _zmq_ctx-pointer/null))
 
-(define-zmq zmq_ctx_destroy
+(define-zmq* zmq_ctx_destroy
   (_fun* _zmq_ctx-pointer -> _int))
 
 ;; ----------------------------------------
 ;; Sockets
 
-(define-zmq zmq_socket
+(define-zmq* zmq_socket
   (_fun* _zmq_ctx-pointer _zmq_socket_type -> _zmq_socket-pointer/null))
 
-(define-zmq zmq_connect
+(define-zmq* zmq_connect
   (_fun* _zmq_socket-pointer _string -> _int))
 
-(define-zmq zmq_disconnect
+(define-zmq* zmq_disconnect
   (_fun* _zmq_socket-pointer _string -> _int))
 
-(define-zmq zmq_bind
+(define-zmq* zmq_bind
   (_fun* _zmq_socket-pointer _string -> _int))
 
-(define-zmq zmq_unbind
+(define-zmq* zmq_unbind
   (_fun* _zmq_socket-pointer _string -> _int))
 
-(define-zmq zmq_close
+(define-zmq* zmq_close
   (_fun* _zmq_socket-pointer -> _int))
 
 ;; ----------------------------------------
@@ -342,11 +352,11 @@
                    (retry (add1 count))]
                   [else #f])))
 
-(define-zmq zmq_getsockopt/int    (_getsockopt/type _int)    #:c-id zmq_getsockopt)
-(define-zmq zmq_getsockopt/int64  (_getsockopt/type _int64)  #:c-id zmq_getsockopt)
-(define-zmq zmq_getsockopt/uint64 (_getsockopt/type _uint64) #:c-id zmq_getsockopt)
+(define-zmq* zmq_getsockopt/int    (_getsockopt/type _int)    #:c-id zmq_getsockopt)
+(define-zmq* zmq_getsockopt/int64  (_getsockopt/type _int64)  #:c-id zmq_getsockopt)
+(define-zmq* zmq_getsockopt/uint64 (_getsockopt/type _uint64) #:c-id zmq_getsockopt)
 
-(define-zmq zmq_getsockopt/bytes
+(define-zmq* zmq_getsockopt/bytes
   (_fun* #:retry (retry [buflen 256] [first-try? #t])
          (sock opt [dlen 0]) ::
          (sock : _zmq_socket-pointer)
@@ -369,11 +379,11 @@
          (_size = (ctype-sizeof _T))
          -> _int))
 
-(define-zmq zmq_setsockopt/int    (_setsockopt/type _int)    #:c-id zmq_setsockopt)
-(define-zmq zmq_setsockopt/int64  (_setsockopt/type _int64)  #:c-id zmq_setsockopt)
-(define-zmq zmq_setsockopt/uint64 (_setsockopt/type _uint64) #:c-id zmq_setsockopt)
+(define-zmq* zmq_setsockopt/int    (_setsockopt/type _int)    #:c-id zmq_setsockopt)
+(define-zmq* zmq_setsockopt/int64  (_setsockopt/type _int64)  #:c-id zmq_setsockopt)
+(define-zmq* zmq_setsockopt/uint64 (_setsockopt/type _uint64) #:c-id zmq_setsockopt)
 
-(define-zmq zmq_setsockopt/bytes
+(define-zmq* zmq_setsockopt/bytes
   (_fun* _zmq_socket-pointer
          _zmq_socket_option
          (buf : _bytes)
@@ -384,7 +394,7 @@
 ;; ----------------------------------------
 ;; Messages
 
-(define-zmq zmq_msg_close
+(define-zmq* zmq_msg_close
   (_fun* _zmq_msg-pointer -> _int))
 
 (define-zmq zmq_msg_init
@@ -405,27 +415,27 @@
   (_fun _zmq_msg-pointer -> _size))
 
 (define-zmq zmq_msg_more
-  (_fun* _zmq_msg-pointer -> _bool))
+  (_fun _zmq_msg-pointer -> _bool))
 
-(define-zmq zmq_send
+(define-zmq* zmq_send
   (_fun* _zmq_socket-pointer
          (buf : _bytes)
          (_size = (bytes-length buf))
          _zmq_sendrecv_flags
          -> _int))
 
-(define-zmq zmq_recv
+(define-zmq* zmq_recv
   (_fun* _zmq_socket-pointer
          (buf : _bytes)
          (_size = (bytes-length buf))
          _zmq_sendrecv_flags
          -> _int))
 
-(define-zmq zmq_msg_recv
+(define-zmq* zmq_msg_recv
   (_fun* _zmq_msg-pointer _zmq_socket-pointer _zmq_sendrecv_flags
          -> _int))
 
-(define-zmq zmq_msg_send
+(define-zmq* zmq_msg_send
   (_fun* _zmq_msg-pointer _zmq_socket-pointer _zmq_sendrecv_flags
          -> _int))
 
@@ -458,9 +468,9 @@
   (_fun _zmq_msg-pointer _bytes/nul-terminated -> _int)
   #:fail (lambda () void))
 
-(define-zmq zmq_join
+(define-zmq* zmq_join
   (_fun* _zmq_socket-pointer _bytes/nul-terminated -> _int))
-(define-zmq zmq_leave
+(define-zmq* zmq_leave
   (_fun* _zmq_socket-pointer _bytes/nul-terminated -> _int))
 
 ;; ----------------------------------------
@@ -570,5 +580,5 @@
 (define (decode-protocol-error pe)
   (cast pe _int _zmq_protocol_error))
 
-(define-zmq zmq_socket_monitor
+(define-zmq* zmq_socket_monitor
   (_fun* _zmq_socket-pointer _string _zmq_socket_events -> _int))

@@ -7,6 +7,7 @@
          ffi/unsafe/atomic
          ffi/unsafe/custodian
          ffi/unsafe/schedule
+         ffi/unsafe/port
          "private/ffi.rkt"
          "private/mutex.rkt"
          "private/addr.rkt")
@@ -264,6 +265,8 @@
       (log-zmq-debug "closing socket: ~e" sock)
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
+      (when (standard-socket? sock)
+        (unsafe-socket->semaphore (zmq_getsockopt/int ptr 'fd) 'remove))
       (-inst-remove-sockptr (socket-inst sock) ptr)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
@@ -641,11 +644,30 @@
 (define (zmq-recv* sock #:who [who 'zmq-recv*])
   (zmq-message-frames (zmq-recv-message sock #:who who)))
 
-(define (zmq-recv-message sock #:who [who 'zmq-recv-message])
+#|
+;; On Racket 7.4 and earlier, this version of zmq-recv-message causes busy
+;; polling (100% cpu usage) when multiple threads block on sockets; see
+;; racket/racket#2833. The replacement below partly mitigates the issue, but it
+;; doesn't help if the program syncs directly on the sockets.
+(define (zmq-recv-message sock #:who who)
   (define r
     (or (call-with-socket-ptr who sock (lambda (ptr) (-try-recv sock ptr)))
         (sync (recv-evt sock))))
   (if (procedure? r) (r who) r))
+|#
+
+(define (zmq-recv-message sock #:who [who 'zmq-recv-message])
+  (define (do-recv who)
+    (call-with-socket-ptr who sock
+      (lambda (ptr)
+        (or (-try-recv sock ptr)
+            (if (threadsafe-socket? sock)
+                (lambda (who)
+                  (sync (recv-evt sock)))
+                (lambda (who)
+                  (sync (unsafe-socket->semaphore (zmq_getsockopt/int ptr 'fd) 'read))
+                  do-recv))))))
+  (let loop ([r (do-recv who)]) (if (procedure? r) (loop (r who)) r)))
 
 ;; recv-evt is an internal helper evt whose sync result is either a zmq-message
 ;; or a procedure to be called to report an error.

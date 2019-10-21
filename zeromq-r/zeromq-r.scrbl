@@ -324,11 +324,11 @@ lower-case. For example, @tt{ZMQ_IPV6} becomes @racket['ipv6] and
 options are supported. See also @racket[zmq-list-options].
 }
 
-@defproc[(zmq-list-options [filter (or/c 'get 'set)]) (listof symbol?)]{
+@defproc[(zmq-list-options [mode (or/c 'get 'set)]) (listof symbol?)]{
 
 Lists the options that this library supports for
 @racket[zmq-get-option] or @racket[zmq-set-option] when
-@racket[filter] is @racket['get] or @racket['set], respectively.
+@racket[mode] is @racket['get] or @racket['set], respectively.
 }
 
 @deftogether[[
@@ -349,9 +349,9 @@ access is checked against @racket[(current-security-guard)]. This
 library cannot parse and check all endpoint formats supported by
 @tt{libzmq}; if @racket[endpoint] is not in a supported format, an
 exception is raised with the message ``invalid endpoint or unsupported
-endpoint format.'' Clients may skip the parsing and access control
-check by using @racket[zmq-unsafe-connect] or
-@racket[zmq-unsafe-bind].
+endpoint format.'' The parsing and access control check can be skipped
+by using @racket[zmq-unsafe-connect] or @racket[zmq-unsafe-bind]
+instead.
 }
 
 @deftogether[[
@@ -505,7 +505,8 @@ checks.
 
 These functions are unsafe, not in the sense that misuse is likely to
 cause memory corruption, but in the sense that they do not respect the
-security guard mechanism.
+current @tech[#:doc '(lib "scribblings/reference/reference.scrbl")]{security
+guard}.
 }
 
 @; ----------------------------------------
@@ -525,12 +526,12 @@ On Mac OS, @tt{libzmq.5.dylib} is required.
 installed in @tt{/usr/local/lib}, which is in the operating system's
 default search path.}
 @item{With MacPorts: Install the @tt{zmq} port. The library will be
-instaled in @tt{/opt/local/lib}, which is @emph{not} in the operating
+installed in @tt{/opt/local/lib}, which is @emph{not} in the operating
 system's default search path. Manually copy or link the library into
 one of the directories returned by @racket[(get-lib-search-dirs)].}
 ]
 
-On Windows, @tt{libzmq.dll} is required; it is automatically provided
-by the @tt{zeromq-win32-{i386,x86_64}} package.
+On Windows, @tt{libzmq.dll} is required. It is automatically installed
+via the @tt{zeromq-win32-{i386,x86_64}} package.
 
 @(close-eval the-eval)

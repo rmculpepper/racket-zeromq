@@ -3,6 +3,7 @@
          ffi/unsafe/atomic
          ffi/unsafe/alloc
          ffi/unsafe/define
+         ffi/unsafe/port
          ffi/winapi)
 (provide (protect-out (except-out (all-defined-out) zmq-load-fail-reason))
          zmq-load-fail-reason)
@@ -12,6 +13,21 @@
 (define EAGAIN (lookup-errno 'EAGAIN))
 (define EINTR (lookup-errno 'EINTR))
 (define EINVAL 22) ;; FIXME
+
+(define unsafe-socket->evt
+  (case (system-type 'os)
+    [(windows) ;; On Windows, unsafe-socket->semaphore is not supported (returns #f).
+     ;; Use dynamic-require to avoid dependending on Racket >= 7.3.
+     (cond [(dynamic-require 'ffi/unsafe/port 'unsafe-fd->evt (lambda () #f))
+            => (lambda (unsafe-fd->evt)
+                 (lambda (s mode) (unsafe-fd->evt s mode #t)))]
+           [else
+            (lambda (s mode)
+              (case mode
+                [(read write)
+                 (error 'unsafe-socket->evt "on Windows, this operation requires Racket 7.3 or later")]
+                [else #f]))])]
+    [else unsafe-socket->semaphore]))
 
 ;; ========================================
 ;; ZeroMQ constants and functions

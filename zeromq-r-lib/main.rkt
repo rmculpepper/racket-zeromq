@@ -266,7 +266,7 @@
       (set-socket-ptr! sock #f)
       (set-socket-ends! sock null)
       (when (standard-socket? sock)
-        (unsafe-socket->semaphore (zmq_getsockopt/fd ptr) 'remove))
+        (unsafe-socket->evt (zmq_getsockopt/fd ptr) 'remove))
       (-inst-remove-sockptr (socket-inst sock) ptr)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
@@ -665,7 +665,7 @@
                 (lambda (who)
                   (sync (recv-evt sock)))
                 (lambda (who)
-                  (sync (unsafe-socket->semaphore (zmq_getsockopt/fd ptr) 'read))
+                  (sync (unsafe-socket->evt (zmq_getsockopt/fd ptr) 'read))
                   do-recv))))))
   (let loop ([r (do-recv who)]) (if (procedure? r) (loop (r who)) r)))
 

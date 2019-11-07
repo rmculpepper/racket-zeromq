@@ -2,7 +2,8 @@
 (require ffi/unsafe
          ffi/unsafe/atomic
          ffi/unsafe/alloc
-         ffi/unsafe/define)
+         ffi/unsafe/define
+         ffi/winapi)
 (provide (protect-out (except-out (all-defined-out) zmq-load-fail-reason))
          zmq-load-fail-reason)
 
@@ -165,7 +166,7 @@
            [curve_server .    (r w int)]
            [curve_serverkey . (r w bytes)]
            [events .          (x - int)]
-           [fd .              (x - int)]
+           [fd .              (x - #f)] ;; type varies
            [identity .        (r w bytes)]
            [immediate .       (r w int)] ;; ??
            [ipv6 .            (r w int)]
@@ -390,6 +391,12 @@
          (_size = (bytes-length buf))
          -> _int)
   #:c-id zmq_setsockopt)
+
+(define (zmq_getsockopt/fd sock)
+  (if win64?
+      (zmq_getsockopt/uint64 sock 'fd)
+      (zmq_getsockopt/int sock 'fd)))
+
 
 ;; ----------------------------------------
 ;; Messages

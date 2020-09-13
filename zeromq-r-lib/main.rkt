@@ -16,6 +16,8 @@
          zmq-message/single-frame?
          zmq-available?
          zmq-version
+         _zmq_ctx-pointer
+         zmq-unsafe-get-ctx
          (rename-out [zmq-message* zmq-message])
          (contract-out
           [zmq-socket
@@ -125,6 +127,11 @@
 
 ;; -get-ctx : -> Context
 (define (-get-ctx) (inst-ctx (-get-inst)))
+
+;; zmq-unsafe-get-ctx : -> (values Context Any)
+(define (zmq-unsafe-get-ctx)
+  (let ([ctx (-get-ctx)])
+    (values ctx ctx)))
 
 ;; -inst-remove-sockptr : Inst _zmq_socket-pointer -> Void
 (define (-inst-remove-sockptr in ptr)

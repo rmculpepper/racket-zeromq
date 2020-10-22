@@ -102,6 +102,7 @@
    poller               ;; _zmq_poller-pointer or #f if not supported
    sockptr=>events      ;; Hasheq[_zmq_socket-pointer => Nat]
    [wakeups #:mutable]  ;; Boolean -- #t if last poller callback was given wakeups
+   [pollcount #:mutable] ;; Nat -- times socket evt polled (w/o wakeups) (for testing)
    ))
 
 (define the-inst #f)
@@ -120,18 +121,24 @@
                         (lambda (poller)
                           (log-zmq-debug "destroying zmq_poller")
                           (zmq_poller_destroy poller)))
-    (set! the-inst (inst ctx poller (make-hasheq) #f)))
+    (set! the-inst (inst ctx poller (make-hasheq) #f 0)))
   the-inst)
 
 ;; -get-ctx : -> Context
 (define (-get-ctx) (inst-ctx (-get-inst)))
 
-;; -inst-remove-sockptr : Inst _zmq_socket-pointer -> Void
-(define (-inst-remove-sockptr in ptr)
-  (match-define (inst _ poller sockptr=>events _) in)
-  (when (hash-has-key? sockptr=>events ptr)
-    (zmq_poller_remove poller ptr)
-    (hash-remove! sockptr=>events ptr)))
+;; -inst-add-socket : Inst Socket _zmq_socket-pointer -> Void
+(define (-inst-add-socket in sock ptr)
+  (when (threadsafe-socket? sock)
+    (zmq_poller_add (inst-poller in) ptr 0)))
+
+;; -inst-remove-socket : Inst Socket _zmq_socket-pointer -> Void
+(define (-inst-remove-socket in sock ptr)
+  (when (threadsafe-socket? sock)
+    (zmq_poller_remove (inst-poller in) ptr)
+    (define sockptr=>events (inst-sockptr=>events in))
+    (when (hash-has-key? sockptr=>events ptr)
+      (hash-remove! sockptr=>events ptr))))
 
 ;; -inst-check-wakeup : Inst Wakeups -> Void
 ;; If stored wakeups was #t and current is #f, then the previous
@@ -139,36 +146,38 @@
 (define (-inst-check-wakeup in wakeups)
   ;; (log-zmq-debug "WAKEUPS: OLD = ~s, NEW = ~s" (inst-wakeups in) wakeups)
   (cond [(not in) (void)] ;; socket closed
-        [(and (eq? (inst-wakeups in) #t) (eq? wakeups #f))
-         ;; (log-zmq-debug "RESETTING WAKEUPS")
-         (define poller (inst-poller in))
-         (define sockptr=>events (inst-sockptr=>events in))
-         (log-zmq-debug "new wakeup round, clearing poller (~s sockets)" (hash-count sockptr=>events))
-         (for ([ptr (in-hash-keys sockptr=>events)])
-           (zmq_poller_remove poller ptr))
-         (hash-clear! sockptr=>events)
-         (set-inst-wakeups! in #f)]
+        [(eq? wakeups #f)
+         (set-inst-pollcount! in (add1 (inst-pollcount in)))
+         (when (eq? (inst-wakeups in) #t)
+           ;; (log-zmq-debug "RESETTING WAKEUPS")
+           (define poller (inst-poller in))
+           (define sockptr=>events (inst-sockptr=>events in))
+           (log-zmq-debug "new wakeup round, clearing poller (~s sockets)"
+                          (hash-count sockptr=>events))
+           (for ([(ptr event) (in-hash sockptr=>events)] #:when (not (zero? event)))
+             (zmq_poller_modify poller ptr 0))
+           (hash-clear! sockptr=>events)
+           (set-inst-wakeups! in #f))]
         [(and (eq? (inst-wakeups in) #f) wakeups)
          (set-inst-wakeups! in #t)]))
 
-;; -inst-add-wakeup : Socket _zmq_socket-pointer Nat Wakeups -> Boolean
+;; -socket-add-wakeup : Socket _zmq_socket-pointer Nat Wakeups -> Boolean
 ;; Returns #t if sleep should be canceled, #f otherwise.
-(define (-inst-add-wakeup sock ptr event wakeups)
+(define (-socket-add-wakeup sock ptr event wakeups)
   (define in (socket-inst sock))
   (define (-wait-on-fd fd)
-    (unsafe-poll-ctx-fd-wakeup wakeups fd 'read)
     (log-zmq-debug "wait; fd = ~s, socket = ~e" fd sock)
+    (unless fd (error '-socket-add-wakeup "fd is #f"))
+    (unsafe-poll-ctx-fd-wakeup wakeups fd 'read)
     #f)
   (cond [(threadsafe-socket? sock)
-         (match-define (inst _ poller sockptr=>events _) (socket-inst sock))
-         (cond [(hash-ref sockptr=>events ptr #f)
-                => (lambda (old-event)
-                     (let ([new-event (bitwise-ior old-event event)])
-                       (zmq_poller_modify poller ptr new-event)
-                       (hash-set! sockptr=>events ptr new-event)))]
-               [else
-                (zmq_poller_add poller ptr event)
-                (hash-set! sockptr=>events ptr event)])
+         (define poller (inst-poller in))
+         (define sockptr=>events (inst-sockptr=>events in))
+         (define old-event (hash-ref sockptr=>events ptr 0))
+         (define new-event (bitwise-ior old-event event))
+         (unless (= new-event old-event)
+           (zmq_poller_modify poller ptr new-event)
+           (hash-set! sockptr=>events ptr new-event))
          (cond [(-poller-wait poller)
                 (log-zmq-debug "poller returned immediately, socket = ~e" sock)
                 #t]
@@ -242,6 +251,7 @@
     (if (threadsafe-socket-type? type)
         (threadsafe-socket type ptr (make-semaphore 0) null the-inst)
         (standard-socket   type ptr (make-semaphore 0) null the-inst (make-mutex))))
+  (-inst-add-socket the-inst sock ptr)
   (register-finalizer-and-custodian-shutdown sock
     (lambda (sock) (-close 'zmq-socket-finalizer sock)))
   (end-atomic)
@@ -267,7 +277,7 @@
       (set-socket-ends! sock null)
       (when (standard-socket? sock)
         (unsafe-socket->evt (zmq_getsockopt/fd ptr) 'remove))
-      (-inst-remove-sockptr (socket-inst sock) ptr)
+      (-inst-remove-socket (socket-inst sock) sock ptr)
       (let ([s (zmq_close ptr)])
         (unless (zero? s)
           (log-zmq-error "error closing socket~a" (errno-lines))))
@@ -577,7 +587,7 @@
 (define (-wait/wakeups self sock ptr event wakeups)
   (define (cancel-sleep) (values '(zmq:ask-again) #f))
   (define (not-ready) (values #f self))
-  (if (-inst-add-wakeup sock ptr event wakeups) (cancel-sleep) (not-ready)))
+  (if (-socket-add-wakeup sock ptr event wakeups) (cancel-sleep) (not-ready)))
 
 (define (-ready? ptr event)
   (positive? (bitwise-and (zmq_getsockopt/int ptr 'events) event)))
@@ -649,7 +659,7 @@
 ;; polling (100% cpu usage) when multiple threads block on sockets; see
 ;; racket/racket#2833. The replacement below partly mitigates the issue, but it
 ;; doesn't help if the program syncs directly on the sockets.
-(define (zmq-recv-message sock #:who who)
+(define (zmq-recv-message sock #:who [who 'zmq-recv-message])
   (define r
     (or (call-with-socket-ptr who sock (lambda (ptr) (-try-recv sock ptr)))
         (sync (recv-evt sock))))
@@ -664,9 +674,8 @@
             (if (threadsafe-socket? sock)
                 (lambda (who)
                   (sync (recv-evt sock)))
-                (lambda (who)
-                  (sync (unsafe-socket->evt (zmq_getsockopt/fd ptr) 'read))
-                  do-recv))))))
+                (let ([evt (unsafe-socket->evt (zmq_getsockopt/fd ptr) 'read)])
+                  (lambda (who) (begin (sync evt) do-recv))))))))
   (let loop ([r (do-recv who)]) (if (procedure? r) (loop (r who)) r)))
 
 ;; recv-evt is an internal helper evt whose sync result is either a zmq-message
@@ -766,8 +775,10 @@
 ;; ============================================================
 
 ;; Don't require this; it exists only for testing.
-(module* private-logger #f
-  (provide zmq-logger))
+(module* private-testing #f
+  (provide get-pollcount)
+  (define (get-pollcount)
+    (call-as-atomic (lambda () (inst-pollcount (-get-inst))))))
 
 ;; ============================================================
 

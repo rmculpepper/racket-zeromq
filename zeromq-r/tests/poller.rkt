@@ -1,36 +1,28 @@
 #lang racket/base
 (require racket/match
+         rackunit
          (only-in ffi/unsafe void/reference-sink)
          racket/logging
          zeromq (submod zeromq unstable-draft-4.3.2)
-         (submod zeromq private-logger))
+         (submod zeromq private-testing))
 
 ;; Test that sockets (especially poller-based sockets) don't busy wait.
+;; More specifically, we test that socket-based events do not get polled
+;; too often.
 
-(define (run/intercept proc intercept)
-  (define (intercept* logv)
-    (match-define (vector level message _ topic) logv)
-    (intercept level topic message))
-  (with-intercepted-logging intercept* proc 'debug 'zmq #:logger zmq-logger))
+(define POLLCOUNT-LIMIT 10)
 
 (define (run/detect-busy who proc)
-  (define result void)
-  (define (proc*)
-    (run/intercept
-     (lambda ()
-       (proc)
-       (set! result (lambda () (error 'test "thread completed normally: ~a" who))))
-     (let ([counter 0])
-       (lambda (level topic message)
-         (when (regexp-match? #rx"(wait; fd)|(poller is ready)" message)
-           ;; (eprintf "log ~s: got ~s, ~s, ~s\n" counter level topic message)
-           (set! counter (add1 counter))
-           (when (> counter 10)
-             (set! result (lambda () (error 'test "busy wait: ~a" who)))
-             (kill-thread th)))))))
-  (define th (thread proc*))
-  (or (sync/timeout 0.25 th) (kill-thread th))
-  (result))
+  (test-case (format "no busy wait for ~a" who)
+    (define (bad-result) (error 'test "thread completed normally: ~a" who))
+    (define result void)
+    (define counter1 (get-pollcount))
+    (define th (thread (lambda () (proc) (set! result bad-result))))
+    (or (sync/timeout 0.25 th) (kill-thread th))
+    (define counter2 (get-pollcount))
+    (when (> (- counter2 counter1) POLLCOUNT-LIMIT)
+      (error 'test "busy wait (~s): ~a" (- counter2 counter1) who))
+    (result)))
 
 ;; ----
 

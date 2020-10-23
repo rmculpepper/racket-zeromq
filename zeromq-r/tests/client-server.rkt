@@ -20,7 +20,7 @@
   (double-server))
 (define server-thread (thread double-server))
 
-(sleep 1)
+(sleep 0.1)
 ;; Client
 
 (define (client n close?)

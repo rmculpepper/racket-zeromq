@@ -810,3 +810,35 @@
   (define zmq-draft-available? poller-available?)
   (define zmq-draft-socket zmq-socket) ;; this module's contract allows #:join
   (define draft-socket-type/c (or/c 'client 'server 'radio 'dish 'scatter 'gather)))
+
+;; ============================================================
+
+;; WARNING: The following module is for testing support for the libzmq DRAFT
+;; socket types and APIs. It *will* disappear in the future without notice.
+(module* unstable-draft-4.3.3 #f
+  ;; FIXME: contracts
+  (provide
+   zmq-draft-available?
+   (contract-out
+    [zmq-draft-socket
+     (->* [draft-socket-type/c]
+          [#:identity (or/c bytes? #f)
+           #:bind (or/c bind-addr/c (listof bind-addr/c))
+           #:connect (or/c connect-addr/c (listof connect-addr/c))
+           #:join (or/c subscription/c (listof subscription/c))]
+          zmq-socket?)]
+    [zmq-send-evt
+     (-> zmq-socket? zmq-message/single-frame? evt?)]
+    [zmq-join
+     (-> zmq-socket? bytes? void?)]
+    [zmq-leave
+     (-> zmq-socket? bytes? void?)]
+    [zmq-message-routing-id
+     (-> zmq-message? (or/c #f exact-positive-integer?))]
+    [zmq-message-group
+     (-> zmq-message? (or/c #f bytes?))]))
+
+  (define zmq-draft-available? poller-available?)
+  (define zmq-draft-socket zmq-socket) ;; this module's contract allows #:join
+  (define draft-socket-type/c
+    (or/c 'client 'server 'radio 'dish 'scatter 'gather 'peer 'channel)))

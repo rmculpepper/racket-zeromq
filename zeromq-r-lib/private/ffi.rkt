@@ -79,6 +79,7 @@
            xpub = 9
            xsub = 10
            stream = 11
+           ;; DRAFT (since 4.3.2 or earlier):
            server = 12
            client = 13
            radio  = 14
@@ -86,6 +87,9 @@
            gather = 16
            scatter = 17
            dgram = 18
+           ;; DRAFT (since 4.3.3):
+           peer = 19
+           channel = 20
            )
          _int))
 
@@ -169,6 +173,27 @@
            gssapi_principal_nametype = 90
            gssapi_service_principal_nametype = 91
            bindtodevice = 92
+           ;; DRAFT (since 4.3.2 or earlier):
+           zap_enforce_domain = 93
+           loopback_fastpath = 94
+           metadata = 95
+           multicast_loop = 96
+           router_notify = 97
+           xpub_manual_last_value = 98
+           socks_username = 99
+           socks_password = 100
+           in_batch_size = 101
+           out_batch_size = 102
+           ;; DRAFT (since 4.3.3):
+           wss_key_pem = 103
+           wss_cert_pem = 104
+           wss_trust_pem = 105
+           wss_hostname = 106
+           wss_trust_system = 107
+           only_first_subscribe = 108
+           reconnect_stop = 109
+           hello_msg = 110
+           disconnect_msg = 111
            )
          _int))
 
@@ -251,6 +276,29 @@
            [gssapi_principal_nametype . (r w int)]
            [gssapi_service_principal_nametype . (r w int)]
            [bindtodevice      . (r w bytes)]
+           ))
+
+(define draft-option-table
+  '#hasheq(;; r = can read, w = can write, x = don't allow client to read/write (unsafe)
+           [zap_enforce_domain     . (r w int)]
+           [loopback_fastpath      . (- - ?)]
+           [metadata               . (r w bytes0)]
+           [multicast_loop         . (r w int)]
+           [router_notify          . (r w int)]
+           [xpub_manual_last_value . (r w int)]
+           [socks_username         . (r w bytes0)]
+           [socks_password         . (r w bytes0)]
+           [in_batch_size          . (x x int)]
+           [out_batch_size         . (x x int)]
+           [wss_key_pem            . (- - ?)]
+           [wss_cert_pem           . (- - ?)]
+           [wss_trust_pem          . (- - ?)]
+           [wss_hostname           . (- - ?)]
+           [wss_trust_system       . (- - ?)]
+           [only_first_subscribe   . (r w int)]
+           [reconnect_stop         . (r w int)]
+           [hello_msg              . (r w bytes)]
+           [disconnect_msg         . (r w bytes)]
            ))
 
 (define ZMQ_POLLIN  1)

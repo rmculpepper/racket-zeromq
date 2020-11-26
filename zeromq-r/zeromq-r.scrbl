@@ -4,6 +4,7 @@
           scribble/basic
           scribble/example
           (for-label racket racket/match racket/contract racket/format
+                     (only-in ffi/unsafe cpointer?)
                      setup/dirs zeromq zeromq/unsafe))
 
 @title{ZeroMQ: Distributed Messaging}
@@ -507,6 +508,25 @@ These functions are unsafe, not in the sense that misuse is likely to
 cause memory corruption, but in the sense that they do not respect the
 current @tech[#:doc '(lib "scribblings/reference/reference.scrbl")]{security
 guard}.
+}
+
+@defproc[(zmq-unsafe-get-ctx) (values cpointer? any/c)]{
+
+Returns two values: @racket[_the-ctx] and @racket[_keepalive]. The first value,
+@racket[_the-ctx], is a pointer to the ZeroMQ context (@tt{zmq_ctx}) used to
+create all sockets managed by the current instance of this library. Note that if
+multiple namespaces each instantiate this library, each instance has a different
+context.
+
+The context is automatically destroyed when there are no references to it
+visible to the Racket GC; there is a reference in every socket created with
+it. In addition, the @racket[_keepalive] value holds a reference to the context,
+so as long as @racket[_keepalive] is visible to the Racket GC, the context will
+not be destroyed. (Currently @racket[_keepalive] is the same as
+@racket[_the-ctx], but future versions of this library may implement context
+finalization differently.)
+
+@history[#:added "1.2"]
 }
 
 @; ----------------------------------------

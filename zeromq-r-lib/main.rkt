@@ -766,7 +766,13 @@
 
 ;; Don't require this directly; use zeromq/unsafe instead.
 (module* private-unsafe #f
-  (provide (protect-out zmq-unsafe-connect zmq-unsafe-bind) bind-addr/c connect-addr/c)
+  (provide (protect-out zmq-unsafe-get-ctx zmq-unsafe-connect zmq-unsafe-bind)
+           bind-addr/c connect-addr/c)
+  (define (zmq-unsafe-get-ctx)
+    (call-as-atomic
+     (lambda ()
+       (define ctx (-get-ctx))
+       (values ctx ctx))))
   (define (zmq-unsafe-connect sock . addrs)
     (bind/connect 'zmq-unsafe-connect sock addrs 'connect #f))
   (define (zmq-unsafe-bind sock . addrs)

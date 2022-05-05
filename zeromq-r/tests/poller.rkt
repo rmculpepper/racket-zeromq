@@ -10,19 +10,31 @@
 ;; More specifically, we test that socket-based events do not get polled
 ;; too often.
 
+(define TRIES 3)
 (define POLLCOUNT-LIMIT 10)
+(define SLEEP-S 0.25)
 
 (define (run/detect-busy who proc)
   (test-case (format "no busy wait for ~a" who)
     (define (bad-result) (error 'test "thread completed normally: ~a" who))
-    (define result void)
-    (define counter1 (get-pollcount))
-    (define th (thread (lambda () (proc) (set! result bad-result))))
-    (or (sync/timeout 0.25 th) (kill-thread th))
-    (define counter2 (get-pollcount))
-    (when (> (- counter2 counter1) POLLCOUNT-LIMIT)
-      (error 'test "busy wait (~s): ~a" (- counter2 counter1) who))
-    (result)))
+    (define (run-once)
+      (define completed? #f)
+      (define counter1 (get-pollcount))
+      (define th (thread (lambda () (proc) (set! completed? #t))))
+      (or (sync/timeout SLEEP-S th) (kill-thread th))
+      (define counter2 (get-pollcount))
+      (values completed? (- counter2 counter1)))
+    (let loop ([acc null])
+      (cond [(< (length acc) TRIES)
+             (define-values (completed? pollct) (run-once))
+             (when completed? (bad-result))
+             ;; (eprintf "~a ~s\n" who pollct)
+             (cond [(> pollct POLLCOUNT-LIMIT)
+                    (loop (cons pollct acc))]
+                   [else (void)])]
+            [else
+             (error 'test "busy wait ~s: ~a" acc who)]))
+    (void)))
 
 ;; ----
 

@@ -10,9 +10,10 @@
 ;; More specifically, we test that socket-based events do not get polled
 ;; too often.
 
-(define TRIES 3)
-(define POLLCOUNT-LIMIT 10)
+(define TRIES 4)
+(define POLLCOUNT-LIMIT 15)
 (define SLEEP-S 0.25)
+(define INTER-SLEEP-S 0.25)
 
 (define (run/detect-busy who proc)
   (test-case (format "no busy wait for ~a" who)
@@ -28,8 +29,9 @@
       (cond [(< (length acc) TRIES)
              (define-values (completed? pollct) (run-once))
              (when completed? (bad-result))
-             ;; (eprintf "~a ~s\n" who pollct)
+             (eprintf "~a ~s\n" who pollct)
              (cond [(> pollct POLLCOUNT-LIMIT)
+                    (begin (collect-garbage) (sleep INTER-SLEEP-S))
                     (loop (cons pollct acc))]
                    [else (void)])]
             [else

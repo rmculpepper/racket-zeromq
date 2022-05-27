@@ -5,7 +5,7 @@
 (define hello-server-thread
   (thread
    (lambda ()
-     (define s (zmq-socket 'rep #:bind "tcp://*:5555"))
+     (define s (zmq-socket 'rep #:bind "tcp://*:5551"))
      ;; (printf "server = ~v\n" s)
      (let loop ()
        (define msg (zmq-recv s))
@@ -22,7 +22,7 @@
               (loop)])))))
 
 (define (hello-client id)
-  (define s (zmq-socket 'req #:connect "tcp://localhost:5555"))
+  (define s (zmq-socket 'req #:connect "tcp://localhost:5551"))
   (for ([i (in-range 10)])
     (zmq-send s (format "message ~s ~s" id i))
     (check-equal? (zmq-recv-string s) (format "hello, ~s" id))))
@@ -31,7 +31,7 @@
           (for/list ([id (in-range 10)])
             (thread (lambda () (hello-client id)))))
 
-(define q (zmq-socket 'req #:connect "tcp://localhost:5555"))
+(define q (zmq-socket 'req #:connect "tcp://localhost:5551"))
 (zmq-send q "quit")
 
 (void (sync hello-server-thread))

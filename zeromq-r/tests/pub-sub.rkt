@@ -6,7 +6,7 @@
 
 ;; Server sends numbers 0-999 in a continuous loop, prefixed by last digit.
 
-(define pub (zmq-socket 'pub #:bind "tcp://*:5556"))
+(define pub (zmq-socket 'pub #:bind "tcp://*:5553"))
 (define (publisher-loop i)
   (zmq-send pub (format "~a ~a" (remainder i 10) i))
   (publisher-loop (remainder (add1 i) 1000)))
@@ -15,7 +15,7 @@
 ;; Client
 
 (define (client digit)
-  (define sub (zmq-socket 'sub #:connect "tcp://localhost:5556"))
+  (define sub (zmq-socket 'sub #:connect "tcp://localhost:5553"))
   (zmq-subscribe sub (format "~a " digit))
   (define msg-total (for/sum ([i (in-range 100)])
                       (define msg (zmq-recv sub))

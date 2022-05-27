@@ -6,8 +6,8 @@
 ;; This tests whether multiple threads waiting on the same socket (and
 ;; same fd) wakeup if multiple reads occur.
 
-(define pub (zmq-socket 'pub #:bind "tcp://*:5557"))
-(define sub (zmq-socket 'sub #:connect "tcp://localhost:5557"))
+(define pub (zmq-socket 'pub #:bind "tcp://*:5572"))
+(define sub (zmq-socket 'sub #:connect "tcp://localhost:5572"))
 (zmq-subscribe sub "msg")
 
 (define readers

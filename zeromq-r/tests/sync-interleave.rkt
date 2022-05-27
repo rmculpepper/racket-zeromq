@@ -8,8 +8,8 @@
 
 (define msg (for/list ([i 10]) (string->bytes/utf-8 (format "~s" i))))
 
-(define push (zmq-socket 'pair #:bind "tcp://*:5557"))
-(define pull (zmq-socket 'pair #:connect "tcp://localhost:5557"))
+(define push (zmq-socket 'pair #:bind "tcp://*:5571"))
+(define pull (zmq-socket 'pair #:connect "tcp://localhost:5571"))
 
 (define readers
   (for/list ([i (in-range 100)])

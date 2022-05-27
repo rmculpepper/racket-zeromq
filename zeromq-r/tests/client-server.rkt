@@ -12,7 +12,7 @@
 
 ;; Server
 
-(define srv (zmq-draft-socket 'server #:bind "tcp://*:5555"))
+(define srv (zmq-draft-socket 'server #:bind "tcp://*:5552"))
 (define (double-server)
   (match-define (zmq-message (list msg) #:routing-id peer) (zmq-recv-message srv))
   (define n (read (open-input-bytes msg)))
@@ -24,7 +24,7 @@
 ;; Client
 
 (define (client n close?)
-  (define cli (zmq-draft-socket 'client #:connect "tcp://localhost:5555"))
+  (define cli (zmq-draft-socket 'client #:connect "tcp://localhost:5552"))
   (zmq-send cli (format "~s" n))
   (define msg (zmq-recv cli))
   (define 2n (read (open-input-bytes msg)))
